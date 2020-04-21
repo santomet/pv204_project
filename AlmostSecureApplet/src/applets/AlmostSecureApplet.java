@@ -48,7 +48,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     private Cipher m_encryptCipher = null;
     private Cipher m_decryptCipher = null;
     private RandomData m_secureRandom = null;
-    private MessageDigest m_hash = null;
+    protected MessageDigest m_hash = null;
     private OwnerPIN m_pin = null;
     private Signature m_sign = null;
     private KeyPair m_keyPair = null;
@@ -56,10 +56,12 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     private Key m_publicKey = null;
     
     //EC
-    ECConfig        ecc = null;
-    ECCurve         curve = null;
-    ECPoint         pointA = null;
-    ECPoint         pointB = null;
+    protected ECConfig        ecc = null;
+    protected ECCurve         curve = null;
+    protected ECPoint         G = null;
+    protected ECPoint         pointA = null;
+    protected ECPoint         pointB = null;
+    
 
     // TEMPORARRY ARRAY IN RAM
     private byte m_ramArray[] = null;
@@ -131,7 +133,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
             m_sign.init(m_privateKey, Signature.MODE_SIGN);
 
             // INIT HASH ENGINE
-            m_hash = MessageDigest.getInstance(MessageDigest.ALG_SHA, false);
+            m_hash = MessageDigest.getInstance(MessageDigest.ALG_SHA_256, false);
 
             // update flag
             isOP2 = true;
@@ -142,9 +144,9 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
             
             pointA = new ECPoint(curve, ecc.ech);
             pointB = new ECPoint(curve, ecc.ech);
+            G = new ECPoint(curve, ecc.ech);
             
-            
-            
+
             byte[] mID = {'c', 'a', 'r', 'd'};
             byte[] theirID = {'u', 's', 'e', 'r'};
             
@@ -414,60 +416,147 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         // SEND OUTGOING BUFFER
         apdu.setOutgoingAndSend(ISO7816.OFFSET_CDATA, signLen);
     }
-}
+    
+     public boolean verifyZKP(byte[] compressedg, ECPoint V, ECPoint X, opencrypto.jcmathlib.Integer r, byte[] userID, short userIDLength) {
+    	
+    	/* ZKP: {V=G*v, r} */    	    	
+    	//BigInteger h = getSHA256(generator, V, X, userID);
+        
+        opencrypto.jcmathlib.Integer h = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh); //we need to store multiplication
+        AlmostSecureApplet.getHash(m_hash, compressedg, V, X, userID, userIDLength, h.getMagnitude_b(), (short)32);
+        
+    	// Public key validation based on p. 25
+    	// http://cs.ucsb.edu/~koc/ccs130h/notes/ecdsa-cert.pdf
+    	
+        //We will count on nonzero
+    	// 1. X != infinity
+    	//if (X.isInfinity()){
+    	//	return false;
+    	//}
+    	
+    	// 2. Check x and y coordinates are in Fq, i.e., x, y in [0, q-1]
+        //skip for now IDK what the F is this, probably order of G
+    	//if (X.getX().toBigInteger().compareTo(BigInteger.ZERO) == -1 ||
+    	//		X.getX().toBigInteger().compareTo(q.subtract(BigInteger.ONE)) == 1 ||
+    	//		X.getY().toBigInteger().compareTo(BigInteger.ZERO) == -1 ||
+    	//		X.getY().toBigInteger().compareTo(q.subtract(BigInteger.ONE)) == 1) {
+    	//	return false;
+    	//}
+        
+    	// 3. Check X lies on the curve
+    	//try {
+    	//	ecCurve.decodePoint(X.getEncoded());
+    	//}
+    	
+    	// 4. Check that nX = infinity.
+    	// It is equivalent - but more more efficient - to check the coFactor*X is not infinity
+    	//if (X.multiply(coFactor).isInfinity()) { 
+    	//	return false;
+    	//}
+    	
+        
+        
+    	// Now check if V = G*r + X*h. 
+        
+        X.multiplication(h.getMagnitude());
+        G.setW(SecP256r1.G, (short)0, (short)65);
+        G.multiplication(r.getMagnitude());
+        
+        X.add(G);
+        
+        
+        
+        
+    	// Given that {G, X} are valid points on curve, the equality implies that V is also a point on curve.
+    	return X.isEqual(V);
+    }
 
+    public static final short getHash(MessageDigest hash, byte[] gcompressed, ECPoint V, ECPoint X, byte[] userID, short userIDLength, byte[] buffer, short offset) {
+        
+                short compCSize = 33; //size of compressed form of curve
+    		byte [] VCompressed = new byte[compCSize];
+                V.getCompressed(VCompressed, (short)1);
+    		byte [] XCompressed = new byte[compCSize];
+                X.getCompressed(XCompressed, (short)1);
+                
+                
+                byte [] shaPaddingCompCurve = {0x00, 0x00, (byte)((compCSize << 8) & 0xff), (byte)((compCSize) & 0xff)}; //padding required by SHA (and forced in our J-PAKE reference implementation)
+                                                          //that contains 4 bytes of size of what we are going to add
+                byte [] shaPaddingUserID = {0x00, 0x00, (byte)((userIDLength << 8) & 0xff), (byte)((userIDLength) & 0xff)};
+                                                              
+                hash.reset();
+                hash.update(shaPaddingCompCurve, (short)0, (short)4);
+                hash.update(gcompressed, (short)0, (short)33); //we do not have to pepend 0x03
 
-private class SchnorrZKP {
+    		hash.update(shaPaddingCompCurve, (short)0, (short)4);
+                hash.update(VCompressed, (short)0, compCSize);
+                
+                hash.update(shaPaddingCompCurve, (short)0, (short)4);
+                hash.update(XCompressed, (short)0, compCSize);
+                
+                hash.update(shaPaddingUserID, (short)0, (short)4);
+                hash.update(userID, (short)0, userIDLength);
+                
+                hash.doFinal(userID, (short)0, userIDLength, buffer, offset);
+                
+   	return hash.getLength();
+    }
+
+    public opencrypto.jcmathlib.Integer getSHA256(opencrypto.jcmathlib.Integer K) {
+
+    	m_hash.reset();
+        opencrypto.jcmathlib.Integer ret = new opencrypto.jcmathlib.Integer((short)m_hash.getLength(), ecc.bnh);
+        m_hash.doFinal(K.getMagnitude_b(), (short)0, K.getSize(), ret.getMagnitude_b(), (short)0);
+        //m_hash.update(K.getMagnitude_b(), (short)0, K.getSize());
+        
+
+    	return ret; // 1 for positive int
+    }
+    
+    private class SchnorrZKP {
     	
     	private ECPoint V = null;
-    	private Bignat r = null;
-        ECConfig ecc = null;
-        ECCurve curve = null;
-        byte [] m_ramarray = null;
-        short m_ramoffset = 0;
+    	private opencrypto.jcmathlib.Integer r = null;
+        short m_ramoffset = 0; //maybe will be used once
     			
-    	private SchnorrZKP (ECConfig ecca, ECCurve curvea, byte[] ramarray, short ramoffset) {
-    		ecc = ecca;
-                curve = curvea;
+    	private SchnorrZKP (ECConfig ecc, ECCurve curve, MessageDigest hash) {
+                r = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
                 V = new ECPoint(curve, ecc.ech);
     	}
     	
     	private void generateZKP (ECPoint X, byte[] userID) {
 
-        	/* Generate a random v from [1, n-1], and compute V = G*v */
-        	//Bignat v = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
-        	//		n.subtract(BigInteger.ONE), new SecureRandom());
-        	//V = generator.multiply(v);
-        	
-        	//BigInteger h = getSHA256(generator, V, X, userID); // h
-
-        	//r = v.subtract(x.multiply(h)).mod(n); // r = v-x*h mod n   	
-                
-                //JC implementation
-                
+                opencrypto.jcmathlib.Integer h = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh); //we need to store multiplication
                 
                 V.randomize(); //effectively generating random v
-                byte[] vbuff = new byte[32];
-                byte[] xbuff = new byte[32];
-                //extracting the random number
-                V.getS(vbuff, (short)0);
-                X.getS(xbuff, (short)0);
-                Bignat v = new Bignat(vbuff, ecc.bnh);
-                Bignat x = new Bignat(xbuff, ecc.bnh);
+                AlmostSecureApplet.getHash(m_hash, curve.G, V, X, userID, (short)userID.length, h.getMagnitude_b(), (short)32);
+
+                opencrypto.jcmathlib.Integer v = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
+                opencrypto.jcmathlib.Integer x = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
+                opencrypto.jcmathlib.Integer n = new opencrypto.jcmathlib.Integer(SecP256r1.n, (short)0, (short)32, ecc.bnh);
                 
-                r.mult(x, h);
-                v.subtract(r);
-                r = v;
-                Bignat n = new Bignat(SecP256r1.n, ecc.bnh);
-                r.mod(n);
+                //extracting private keys
+                V.getS(v.getMagnitude_b(), (short)0);
+                X.getS(v.getMagnitude_b(), (short)0);
+                
+                // r = v-x*h mod n    ==   (-h*x + v) mod n
+                h.multiply(x);
+                h.negate();
+                
+                h.add(v);
+                h.modulo(n); //we still have the negative value of mod
+                h.add(n); //so we need o add this
+                r = h;
         }
     	
     	private ECPoint getV() {
     		return V;
     	}
     	
-    	private Bignat getr() {
+    	private opencrypto.jcmathlib.Integer getr() {
     		return r;
     	}
     	
     }
+}
+

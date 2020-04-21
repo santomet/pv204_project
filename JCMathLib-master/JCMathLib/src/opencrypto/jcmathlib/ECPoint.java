@@ -146,6 +146,29 @@ public class ECPoint {
         ech.unlock(ech.uncompressed_point_arr1);
         return this.theCurve.COORD_SIZE;
     }
+    
+     /**
+     * Returns the point in compressed form.
+     *
+     * @param buffer output array for Y coordinate
+     * @param offset start offset within output array
+     * @return length of compressed form of coordinate (in bytes)
+     */  
+    public short getCompressed(byte[] buffer, short offset) {
+        ech.lock(ech.uncompressed_point_arr1);
+        thePoint.getW(ech.uncompressed_point_arr1, (short) 0);
+
+        //test last bit of Y
+        if((ech.uncompressed_point_arr1[this.theCurve.COORD_SIZE*2] & 0x01) == 0x01) {
+            buffer[0] = 0x03;
+        }
+        else {
+            buffer[0] = 0x02;
+        }
+        Util.arrayCopyNonAtomic(ech.uncompressed_point_arr1, (short)1, buffer, (short)(offset + (short)1), this.theCurve.COORD_SIZE);
+        ech.unlock(ech.uncompressed_point_arr1);
+        return this.theCurve.COORD_SIZE;
+    }
     /**
      * Returns the Y coordinate of this point in form of Bignat object.
      *
