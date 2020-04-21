@@ -50,17 +50,21 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     private RandomData m_secureRandom = null;
     protected MessageDigest m_hash = null;
     private OwnerPIN m_pin = null;
+    private byte[] m_rawpin = null;
     private Signature m_sign = null;
     private KeyPair m_keyPair = null;
     private Key m_privateKey = null;
     private Key m_publicKey = null;
     
-    //EC
+    //EC and schnorr
     protected ECConfig        ecc = null;
     protected ECCurve         curve = null;
-    protected ECPoint         G = null;
-    protected ECPoint         pointA = null;
-    protected ECPoint         pointB = null;
+    protected ECPoint         Gen = null;
+    protected ECPoint         X3 = null;
+    protected ECPoint         X4 = null;
+    //schnorr
+    byte[] mID = {'c', 'a', 'r', 'd'};
+    byte[] theirID = {'u', 's', 'e', 'r'};
     
 
     // TEMPORARRY ARRAY IN RAM
@@ -121,7 +125,8 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
 
             m_pin = new OwnerPIN((byte) 5, (byte) 4); // 5 tries, 4 digits in pin
             m_pin.update(m_dataArray, (byte) 0, (byte) 4); // set initial random pin
-
+            
+            m_rawpin = new byte [] {0x01, 0x02, 0x03, 0x04};
             // CREATE RSA KEYS AND PAIR 
             m_keyPair = new KeyPair(KeyPair.ALG_RSA_CRT, KeyBuilder.LENGTH_RSA_2048);
             m_keyPair.genKeyPair(); // Generate fresh key pair on-card
@@ -142,19 +147,14 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
             ecc = new ECConfig((short) 256);
             curve = new ECCurve(false, SecP256r1.p, SecP256r1.a, SecP256r1.b, SecP256r1.G, SecP256r1.r);
             
-            pointA = new ECPoint(curve, ecc.ech);
-            pointB = new ECPoint(curve, ecc.ech);
-            G = new ECPoint(curve, ecc.ech);
-            
+            X3 = new ECPoint(curve, ecc.ech); //X3 and X4 points as per example
+            X4 = new ECPoint(curve, ecc.ech);
+            Gen = new ECPoint(curve, ecc.ech);
+            Gen.setW(SecP256r1.G, (short)0, (short)65);
 
-            byte[] mID = {'c', 'a', 'r', 'd'};
-            byte[] theirID = {'u', 's', 'e', 'r'};
-            
-            
-            
-            
-            
-
+            mID = new byte[]{'c', 'a', 'r', 'd'};
+            theirID = new byte[]{'u', 's', 'e', 'r'};
+           
         } 
 
         // register this instance
@@ -300,6 +300,140 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         m_encryptCipher.init(m_aesKey, Cipher.MODE_ENCRYPT);
         m_decryptCipher.init(m_aesKey, Cipher.MODE_DECRYPT);
     }
+    
+    
+    void jpakeResponse1(APDU apdu) {
+        
+        //ALICESIM
+        ECPoint X1 = new ECPoint(curve, ecc.ech);
+        ECPoint X2 = new ECPoint(curve, ecc.ech);
+        
+        
+        X1.randomize();
+        X2.randomize();
+        
+        opencrypto.jcmathlib.Integer x1 = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
+        X1.getS(x1.getMagnitude_b(), (short)0);
+   
+        opencrypto.jcmathlib.Integer x2 = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
+        X2.getS(x2.getMagnitude_b(), (short)0);
+        
+        SchnorrZKP zkpX1 = new SchnorrZKP();
+        SchnorrZKP zkpX2 = new SchnorrZKP();
+        zkpX1.generateZKP(Gen, X1, x1, theirID);
+        zkpX2.generateZKP(Gen, X2, x2, theirID);
+        //----------------------
+        
+        X3.randomize();
+        X4.randomize();
+        
+        opencrypto.jcmathlib.Integer x3 = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
+        X3.getS(x3.getMagnitude_b(), (short)0);
+   
+        opencrypto.jcmathlib.Integer x4 = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
+        X4.getS(x4.getMagnitude_b(), (short)0);
+        
+        SchnorrZKP zkpX3 = new SchnorrZKP();
+        SchnorrZKP zkpX4 = new SchnorrZKP();
+        zkpX3.generateZKP(Gen, X3, x3, mID);
+        zkpX4.generateZKP(Gen, X3, x4, mID);
+        
+        //ALICESIM
+        //check ID we need valid identity but whatever, this can be static, ID is a public information
+        if (verifyZKP(Gen, X3, zkpX3.getV(), zkpX3.getr(), mID, (short)4) && verifyZKP(Gen, X4, zkpX4.getV(), zkpX4.getr(), mID, (short)4)) {
+            //ok this works
+            byte[] kkt = new byte[] {0x01};
+        }
+        //----------------------------------
+        
+        if (verifyZKP(Gen, X1, zkpX1.getV(), zkpX1.getr(), theirID, (short)4) && verifyZKP(Gen, X2, zkpX2.getV(), zkpX2.getr(), theirID, (short)4)) {
+            //ok this works
+            byte[] kkt = new byte[] {0x01};
+        }
+        
+        //should be common
+        opencrypto.jcmathlib.Integer n = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
+        n.fromByteArrayAsNat(SecP256r1.n, (short)0, (short)32);
+        opencrypto.jcmathlib.Integer s = new opencrypto.jcmathlib.Integer(m_rawpin, (short)0, (short)4, ecc.bnh); //password = pin
+        
+        //ALICESIM
+        opencrypto.jcmathlib.Integer x2s = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
+        x2s.clone(x2);
+        //-------------------------------------
+        
+        opencrypto.jcmathlib.Integer x4s = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
+        x4s.clone(x4);
+        
+
+//STEP 2!!!!!
+        
+        //ALICESIM
+        ECPoint GA = new ECPoint(curve, ecc.ech);
+        ECPoint A = new ECPoint(curve, ecc.ech);
+        GA.copy(X1);
+        GA.add(X3);
+        GA.add(X4);
+        A.copy(GA);
+        
+        x2s.multiply(s);
+        x2s.modulo(n); //x2 is now forever x2.multiply(s).mod(n)
+        
+        A.multiplication(x2s.getMagnitude());
+        
+        SchnorrZKP zkpX2s = new SchnorrZKP();
+        zkpX2s.generateZKP(GA, A, x2s, mID);
+        //-------------------
+        
+        ECPoint GB = new ECPoint(curve, ecc.ech);
+        ECPoint B = new ECPoint(curve, ecc.ech);
+        GB.copy(X1);
+        GB.add(X2);
+        GB.add(X3);
+        B.copy(GB);
+        
+        x4s.multiply(s);
+        x4s.modulo(n); //x2 is now forever x2.multiply(s).mod(n)
+        
+        B.multiplication(x4s.getMagnitude());
+        
+        SchnorrZKP zkpX4s = new SchnorrZKP();
+        zkpX4s.generateZKP(GB, B, x4s, mID);
+        
+        
+        //CHECK!!!
+        //ALICESIM .
+        if (verifyZKP(GB, B, zkpX2s.getV(), zkpX4s.getr(), mID, (short)4)) {
+            //ok this works
+            byte[] kkt = new byte[] {0x01};
+        }
+        //----------------------
+        
+        if (verifyZKP(GA, A, zkpX2s.getV(), zkpX2s.getr(), theirID, (short)4)) {
+            //ok this works
+            byte[] kkt = new byte[] {0x01};
+        }
+        
+        
+        //ALICESIM
+        //opencrypto.jcmathlib.Integer Ka = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh);
+        X4.multiplication(x2s.getMagnitude());
+        X4.negate();
+        B.add(X4);
+        B.multiplication(x2.getMagnitude());
+        //-----------------------------
+        
+        //opencrypto.jcmathlib.Integer Kb = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh);
+        X2.multiplication(x4s.getMagnitude());
+        X2.negate();
+        A.add(X2);
+        A.multiplication(x4.getMagnitude());
+        
+        if(A.isEqual(B)) {
+            //WE WON
+            byte[] kkt = new byte[] {0x01};
+        }
+        
+    }
 
     // ENCRYPT INCOMING BUFFER
     void Encrypt(APDU apdu) {
@@ -362,6 +496,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
 
     // GENERATE RANDOM DATA
     void Random(APDU apdu) {
+        jpakeResponse1(apdu);
         byte[] apdubuf = apdu.getBuffer();
 
         // GENERATE DATA
@@ -417,13 +552,13 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         apdu.setOutgoingAndSend(ISO7816.OFFSET_CDATA, signLen);
     }
     
-     public boolean verifyZKP(byte[] compressedg, ECPoint V, ECPoint X, opencrypto.jcmathlib.Integer r, byte[] userID, short userIDLength) {
+     public boolean verifyZKP(ECPoint G, ECPoint V, ECPoint X, opencrypto.jcmathlib.Integer r, byte[] userID, short userIDLength) {
     	
     	/* ZKP: {V=G*v, r} */    	    	
     	//BigInteger h = getSHA256(generator, V, X, userID);
         
-        opencrypto.jcmathlib.Integer h = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh); //we need to store multiplication
-        AlmostSecureApplet.getHash(m_hash, compressedg, V, X, userID, userIDLength, h.getMagnitude_b(), (short)32);
+        opencrypto.jcmathlib.Integer h = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
+        AlmostSecureApplet.getHash(m_hash, G, V, X, userID, userIDLength, h.getMagnitude_b(), (short)0);
         
     	// Public key validation based on p. 25
     	// http://cs.ucsb.edu/~koc/ccs130h/notes/ecdsa-cert.pdf
@@ -457,12 +592,15 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         
         
     	// Now check if V = G*r + X*h. 
+        ECPoint X1 = new ECPoint(curve, ecc.ech);
+        ECPoint G1 = new ECPoint(curve, ecc.ech);
+        X1.copy(X);
+        G1.copy(G);
         
-        X.multiplication(h.getMagnitude());
-        G.setW(SecP256r1.G, (short)0, (short)65);
-        G.multiplication(r.getMagnitude());
+        X1.multiplication(h.getMagnitude());
+        G1.multiplication(r.getMagnitude());
         
-        X.add(G);
+        X1.add(G1);
         
         
         
@@ -471,13 +609,15 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     	return X.isEqual(V);
     }
 
-    public static final short getHash(MessageDigest hash, byte[] gcompressed, ECPoint V, ECPoint X, byte[] userID, short userIDLength, byte[] buffer, short offset) {
+    public static final short getHash(MessageDigest hash, ECPoint G, ECPoint V, ECPoint X, byte[] userID, short userIDLength, byte[] buffer, short offset) {
         
                 short compCSize = 33; //size of compressed form of curve
     		byte [] VCompressed = new byte[compCSize];
-                V.getCompressed(VCompressed, (short)1);
+                V.getCompressed(VCompressed, (short)0);
     		byte [] XCompressed = new byte[compCSize];
-                X.getCompressed(XCompressed, (short)1);
+                X.getCompressed(XCompressed, (short)0);
+                byte [] GCompressed = new byte[compCSize];
+                G.getCompressed(GCompressed, (short)0);
                 
                 
                 byte [] shaPaddingCompCurve = {0x00, 0x00, (byte)((compCSize << 8) & 0xff), (byte)((compCSize) & 0xff)}; //padding required by SHA (and forced in our J-PAKE reference implementation)
@@ -486,7 +626,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
                                                               
                 hash.reset();
                 hash.update(shaPaddingCompCurve, (short)0, (short)4);
-                hash.update(gcompressed, (short)0, (short)33); //we do not have to pepend 0x03
+                hash.update(GCompressed, (short)0, (short)33); //we do not have to pepend 0x03
 
     		hash.update(shaPaddingCompCurve, (short)0, (short)4);
                 hash.update(VCompressed, (short)0, compCSize);
@@ -502,7 +642,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
    	return hash.getLength();
     }
 
-    public opencrypto.jcmathlib.Integer getSHA256(opencrypto.jcmathlib.Integer K) {
+    public opencrypto.jcmathlib.Integer getHash(opencrypto.jcmathlib.Integer K) {
 
     	m_hash.reset();
         opencrypto.jcmathlib.Integer ret = new opencrypto.jcmathlib.Integer((short)m_hash.getLength(), ecc.bnh);
@@ -513,34 +653,37 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     	return ret; // 1 for positive int
     }
     
-    private class SchnorrZKP {
+    protected class SchnorrZKP {
     	
     	private ECPoint V = null;
     	private opencrypto.jcmathlib.Integer r = null;
         short m_ramoffset = 0; //maybe will be used once
     			
-    	private SchnorrZKP (ECConfig ecc, ECCurve curve, MessageDigest hash) {
+    	private SchnorrZKP () {
                 r = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
                 V = new ECPoint(curve, ecc.ech);
     	}
     	
-    	private void generateZKP (ECPoint X, byte[] userID) {
+    	private void generateZKP (ECPoint G, ECPoint X, opencrypto.jcmathlib.Integer x, byte[] userID) {
 
                 opencrypto.jcmathlib.Integer h = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh); //we need to store multiplication
                 
                 V.randomize(); //effectively generating random v
-                AlmostSecureApplet.getHash(m_hash, curve.G, V, X, userID, (short)userID.length, h.getMagnitude_b(), (short)32);
+                AlmostSecureApplet.getHash(m_hash, G, V, X, userID, (short)userID.length, h.getMagnitude_b(), (short)32);
 
                 opencrypto.jcmathlib.Integer v = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-                opencrypto.jcmathlib.Integer x = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-                opencrypto.jcmathlib.Integer n = new opencrypto.jcmathlib.Integer(SecP256r1.n, (short)0, (short)32, ecc.bnh);
+                opencrypto.jcmathlib.Integer n = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
+                n.fromByteArrayAsNat(SecP256r1.n, (short)0, (short)32);
+                
+                opencrypto.jcmathlib.Integer x2 = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh); //another dirty trick, why this will never work on real javacard
+                x2.clone(x);
                 
                 //extracting private keys
                 V.getS(v.getMagnitude_b(), (short)0);
                 X.getS(v.getMagnitude_b(), (short)0);
                 
-                // r = v-x*h mod n    ==   (-h*x + v) mod n
-                h.multiply(x);
+                // r = v-x*h mod n    ==   (-h*x + v) mod n                
+                h.multiply(x2);
                 h.negate();
                 
                 h.add(v);

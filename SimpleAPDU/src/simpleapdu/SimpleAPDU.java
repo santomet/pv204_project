@@ -30,9 +30,10 @@ public class SimpleAPDU {
             SimpleAPDU main = new SimpleAPDU();
             
             main.demoGetRandomDataCommand();
-            main.demoEncryptDecrypt();
-            main.demoUseRealCard();
+           //main.demoEncryptDecrypt();
+           // main.demoUseRealCard();
             
+                 
         } catch (Exception ex) {
             System.out.println("Exception : " + ex);
         }

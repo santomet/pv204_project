@@ -6,6 +6,8 @@ package opencrypto.jcmathlib;
 import javacard.framework.ISOException;
 import javacard.framework.JCSystem;
 import javacard.framework.Util;
+import javacard.security.KeyBuilder;
+import javacard.security.RSAPublicKey;
 import javacardx.crypto.Cipher;
 
 /**
@@ -1779,7 +1781,7 @@ public class Bignat {
         // Potential problem: we are changing key value for publicKey already used before with occ.bnHelper.modCipher. 
         // Simulator and potentially some cards fail to initialize this new value properly (probably assuming that same key object will always have same value)
         // Fix (if problem occure): generate new key object: RSAPublicKey publicKey = (RSAPublicKey) KeyBuilder.buildKey(KeyBuilder.TYPE_RSA_PUBLIC, (short) (baseLen * 8), false);
-
+        //RSAPublicKey publicKey = (RSAPublicKey) KeyBuilder.buildKey(KeyBuilder.TYPE_RSA_PUBLIC, (short) (2048 * 8), false);
         bnh.fnc_NmodE_pubKey.setExponent(exponent, (short) 0, exponentLen);
         bnh.lock(bnh.fnc_deep_resize_tmp);
         modulo.append_zeros(baseLen, bnh.fnc_deep_resize_tmp, (short) 0);

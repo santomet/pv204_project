@@ -216,6 +216,21 @@ public class Integer {
         //Store magnitude
         this.magnitude.from_byte_array((short) (valueLength - 1), (short) 0, value, (short) (valueOffset + 1));
     }
+    
+    
+    /**
+     * Deserialize value of this integer as natural namber. 
+     * Sign is zero
+     * @param value array with value
+     * @param valueOffset start offset within value
+     * @param valueLength length of value
+     */
+    public void fromByteArrayAsNat(byte[] value, short valueOffset, short valueLength) {
+        //Store sign
+        this.sign = value[valueOffset];
+        //Store magnitude
+        this.magnitude.from_byte_array(valueLength, (short) 0, value, (short) (valueOffset));
+    }
 
     /**
      * Return true if integer is negative.
