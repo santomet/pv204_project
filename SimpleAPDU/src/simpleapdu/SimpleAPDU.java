@@ -13,6 +13,14 @@ import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.security.MessageDigest;
 import java.security.SecureRandom;
+import javacard.framework.OwnerPIN;
+import javacard.security.AESKey;
+import javacard.security.Key;
+import javacard.security.KeyBuilder;
+import javacard.security.KeyPair;
+import javacard.security.RandomData;
+import javacard.security.Signature;
+import javacardx.crypto.Cipher;
 
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
@@ -36,31 +44,69 @@ public class SimpleAPDU {
     
     private static final Integer BIGINT_LENGTH = 32; 
     private static final Integer POINT_LENGTH = 33;
+    private static final Integer JPAKE1_TOTAL_LENGTH = 196; 
+    private static final Integer JPAKE2_TOTAL_LENGTH = 196; 
+    private static final Integer JPAKE3_TOTAL_LENGTH = 98;
+    private static final Integer JPAKE4_TOTAL_LENGTH = 98;
     private static final boolean COMPRESS_POINTS = true;
     private static final Integer ZKP_LENGTH = BIGINT_LENGTH + POINT_LENGTH;
     
-    private static final byte[] PIN = {0x01, 0x02, 0x03, 0x04};
-    private static final BigInteger SHARED_BIG_INT = BigIntegers.fromUnsignedByteArray(PIN);
-    private static final byte[] CARD_ID = new byte[]{'c', 'a', 'r', 'd'};
-    private static final byte[] PC_ID = new byte[]{'u', 's', 'e', 'r'};
+    private static final short RESPONSE_OK = (short) 0x9000;
     
-    private static ECParameterSpec ecSpec = ECNamedCurveTable.getParameterSpec("prime256v1");
-    private static ECCurve.Fp ecCurve = (ECCurve.Fp) ecSpec.getCurve();
-    private static ECPoint G = ecSpec.getG();
-    private static BigInteger q = ecCurve.getCofactor();
-    private static BigInteger n = ecSpec.getN();
-
+    private static byte[] CARD_ID   = null;
+    private static byte[] PC_ID     = null;
+    private static byte[] PIN       = null;
+    private static BigInteger SHARED_BIG_INT = null;
+    
+    private ECParameterSpec ecSpec  = null;
+    private ECCurve.Fp  ecCurve     = null;
+    private BigInteger n        = null;
+    private ECPoint G           = null;
+    private ECPoint pointG1     = null;
+    private ECPoint pointG2     = null;
+    private ECPoint pointG3     = null;
+    private ECPoint pointG4     = null;
+    private ECPoint GA          = null;
+    private ECPoint A           = null;
+    
     private BigInteger x1 = null;
     private BigInteger x2 = null;
-    private ECPoint pointG1 = null;
-    private ECPoint pointG2 = null;
-    private ECPoint pointG3 = null;
-    private ECPoint pointG4 = null;
+    
     private ECPoint pointK = null;
     private BigInteger key = null;
-    private ECPoint GA = null;
-    private ECPoint A = null;
+    
+    
+    private AESKey m_aesKey        = null;
+    private Cipher m_encryptCipher = null;
+    private Cipher m_decryptCipher = null;
+    private RandomData m_secureRandom = null;
+    protected MessageDigest m_hash = null;
+    private Signature m_sign    = null;
+    private KeyPair m_keyPair   = null;
+    private Key m_privateKey    = null;
+    private Key m_publicKey     = null;
         
+    
+    protected SimpleAPDU() {
+        CARD_ID = new byte[] {'c', 'a', 'r', 'd'};
+        PC_ID = new byte[] {'u', 's', 'e', 'r'};
+        PIN = new byte[] {0x01, 0x02, 0x03, 0x04};
+        SHARED_BIG_INT = BigIntegers.fromUnsignedByteArray(PIN);
+        ecSpec = ECNamedCurveTable.getParameterSpec("prime256v1");
+        ecCurve = (ECCurve.Fp) ecSpec.getCurve();
+        G = ecSpec.getG();
+        n = ecSpec.getN();
+        
+        // CREATE AES KEY OBJECT
+        m_aesKey = (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
+        
+        // CREATE OBJECTS FOR CBC CIPHERING
+        m_encryptCipher = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
+        m_decryptCipher = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
+
+        // CREATE RANDOM DATA GENERATORS
+        m_secureRandom = RandomData.getInstance(RandomData.ALG_SECURE_RANDOM);
+    }
     
     /**
      * Main entry point.
@@ -68,56 +114,93 @@ public class SimpleAPDU {
      * @param args
      */
     public static void main(String[] args) {
+        
         try {
             SimpleAPDU main = new SimpleAPDU();
-            main.demoAlmostSecure();
-//            main.jpakeWithoutCard();                 
+            // CardManager abstracts from real or simulated card, provide with applet AID
+            final CardManager cardMngr = new CardManager(true, APPLET_AID_BYTE); 
+        
+            // Get default configuration for subsequent connection to card (personalized later)
+            final RunConfig runCfg = RunConfig.getDefaultConfig();
+
+            // Running in the simulator 
+            runCfg.setAppletToSimulate(AlmostSecureApplet.class); // main class of applet to simulate
+            runCfg.setTestCardType(RunConfig.CARD_TYPE.JCARDSIMLOCAL); // Use local simulator
+
+            // Connect to first available card
+            // NOTE: selects target applet based on AID specified in CardManager constructor
+            System.out.print("Connecting to card...");
+            if (!cardMngr.Connect(runCfg)) {
+                System.out.println(" Failed.");
+            }
+            System.out.println(" Done.");
+
+        
+            if (! main.CreateSecureChannel(cardMngr)) {
+                cardMngr.transmit(main.deselectAPDU());
+            }
+            
+            /*
+            
+            Sending messeges
+            
+            */
+            cardMngr.transmit(main.deselectAPDU());
+                             
         } catch (Exception ex) {
             System.out.println("Exception : " + ex);
         }
     }
     
-    private void demoAlmostSecure()  throws Exception {
-        // CardManager abstracts from real or simulated card, provide with applet AID
-        final CardManager cardMngr = new CardManager(true, APPLET_AID_BYTE); 
-        
-        // Get default configuration for subsequent connection to card (personalized later)
-        final RunConfig runCfg = RunConfig.getDefaultConfig();
-
-        // B) If running in the simulator 
-        runCfg.setAppletToSimulate(AlmostSecureApplet.class); // main class of applet to simulate
-        runCfg.setTestCardType(RunConfig.CARD_TYPE.JCARDSIMLOCAL); // Use local simulator
-
-        // Connect to first available card
-        // NOTE: selects target applet based on AID specified in CardManager constructor
-        System.out.print("Connecting to card...");
-        if (!cardMngr.Connect(runCfg)) {
-            System.out.println(" Failed.");
-        }
-        System.out.println(" Done.");
-
+    private boolean CreateSecureChannel(CardManager cardMngr)  throws Exception {
         
         byte[] APDUdata = JPAKE1();
-        pointG1 = pointG1.normalize();
-        pointG2 = pointG2.normalize();
+        if (APDUdata.length != JPAKE1_TOTAL_LENGTH) {
+            // Generated APDU data has different length than they should have
+            return false;
+        }
         
-        final ResponseAPDU response = cardMngr.transmit(new CommandAPDU(0xB0, 0x01, 0x00, 0x00, APDUdata, 196)); // Use other constructor for CommandAPDU
-        byte[] responseData = response.getData();
+        // Send to card ang get the response
+        final ResponseAPDU response2 = cardMngr.transmit(new CommandAPDU(0xB0, 0x01, 0x00, 0x00, APDUdata, JPAKE2_TOTAL_LENGTH)); // Use other constructor for CommandAPDU
+        byte[] responseData2 = response2.getData();
+        if ((short) response2.getSW() != RESPONSE_OK || responseData2.length != JPAKE2_TOTAL_LENGTH) {
+            // Processing of APDU on card was not successful or the response has bad length
+            return false;
+        }
         
-        if (!JPAKE2(responseData)){
+        if (!JPAKE2(responseData2)){
+            // ZKP for x3 (or x4) was not correct
             System.out.println(" JPAKE2 fail.");
+            return false;
         }
+        
         byte[] APDUdata3 = JPAKE3();
-        
-        final ResponseAPDU response3 = cardMngr.transmit(new CommandAPDU(0xB0, 0x02, 0x00, 0x00, APDUdata3, 98)); // Use other constructor for CommandAPDU
-        byte[] responseData3 = response3.getData();
-        
-        if (!JPAKE4(responseData3)){
-            System.out.println(" JPAKE4 fail.");
+        if (APDUdata3.length != JPAKE3_TOTAL_LENGTH) {
+            // Generated APDU data has different length than they should have
+            return false;
         }
-
+        
+        final ResponseAPDU response4 = cardMngr.transmit(new CommandAPDU(0xB0, 0x02, 0x00, 0x00, APDUdata3, JPAKE4_TOTAL_LENGTH)); // Use other constructor for CommandAPDU
+        byte[] responseData4 = response4.getData();
+        if ((short) response4.getSW() != RESPONSE_OK || responseData4.length != JPAKE4_TOTAL_LENGTH) {
+            // Processing of APDU on card was not successful or the response has bad length
+            return false;
+        }
+        
+        if (!JPAKE4(responseData4)){
+            // ZKP for x4 * s was not correct
+            System.out.println(" JPAKE4 fail.");
+            return false;
+        }
+        
+        return true;
     }
-   
+    
+
+    private CommandAPDU deselectAPDU() {
+        /* Creates deselect APDU */
+        return new CommandAPDU(0xB0, 0x03, 0x00, 0x00);
+    }
 
     private byte[] JPAKE1() throws IOException {
         /* get random x1, x2 from [1, n-1] */
@@ -230,21 +313,6 @@ public class SimpleAPDU {
     }
     
   
-    private byte[] toByteWithoutSign(BigInteger bigInt) {
-        // Not used now
-        // removes first byte from BigInteger byte representation
-        byte[] array = bigInt.toByteArray();
-        
-        //if(array.length > 32) {
-        //    array = Arrays.copyOfRange(r1Array, r1Array.length-32, r1Array.length);
-        //}
-        
-        byte[] tmp = new byte[array.length - 1];
-        System.arraycopy(array, 1, tmp, 0, tmp.length);
-        array = tmp;
-        return array;
-    }
-    
     
     private BigInteger getSHA256(ECPoint G, ECPoint V, ECPoint D, byte[] userID) {
     	MessageDigest sha256 = null;
@@ -374,7 +442,7 @@ public class SimpleAPDU {
         
         private byte[] toByteArray() throws IOException {
             /*
-              Encodes the point and the number to bytes
+              Encodes ZKP (the point and the number) to bytes
             */
             ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
             byteStream.write(this.getV().normalize().getEncoded(COMPRESS_POINTS));
