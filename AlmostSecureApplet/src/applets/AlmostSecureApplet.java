@@ -54,17 +54,19 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     final static short JPAKE2_G4_OFFSET_DATA = (short) 0x62;
     final static short JPAKE2_V4_OFFSET_DATA = (short) 0x83;
     final static short JPAKE2_r4_OFFSET_DATA = (short) 0xA4;
-    final static short JPAKE2_B_OFFSET_DATA = (short) 0xC4;
-    final static short JPAKE2_Vx4s_OFFSET_DATA = (short) 0xE5;
-    final static short JPAKE2_rx4s_OFFSET_DATA = (short) 0x106;
     
     final static short JPAKE3_A_OFFSET_DATA = (short) 0x0;
     final static short JPAKE3_Vx2s_OFFSET_DATA = (short) 0x21;
     final static short JPAKE3_rx2s_OFFSET_DATA = (short) 0x42;
     
-    final static short JPAKE1_TOTAL_DATASIZE = (short) 0x196;
-    final static short JPAKE2_TOTAL_DATASIZE = (short) 0x294;
-    final static short JPAKE3_TOTAL_DATASIZE = (short) 0x98;
+    final static short JPAKE4_B_OFFSET_DATA = (short) 0x0;
+    final static short JPAKE4_Vx4s_OFFSET_DATA = (short) 0x21;
+    final static short JPAKE4_rx4s_OFFSET_DATA = (short) 0x42;
+    
+    final static short JPAKE1_TOTAL_DATASIZE = (short) 0xC4;
+    final static short JPAKE2_TOTAL_DATASIZE = (short) 0xC4;
+    final static short JPAKE3_TOTAL_DATASIZE = (short) 0x63;
+    final static short JPAKE4_TOTAL_DATASIZE = (short) 0x63;
     
     final static short JPAKE_COMPRESSEDPOINTSIZE = (short) 0x21;
     final static short JPAKE_SCALARSIZE = (short) 0x20;
@@ -106,7 +108,10 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     
     //EC and schnorr
     protected ECPoint         Gen = null; //generator point 
+    protected ECPoint         G1 = null;
     protected ECPoint         G2 = null;
+    protected ECPoint         G3 = null;
+    protected ECPoint         G4 = null;
     protected ECPoint         GA = null;
     private BigInteger        n = null;
     private BigInteger        x4 = null;
@@ -264,6 +269,9 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
                     case INS_JPAKE1:
                         JPake1(apdu);
                         break;
+                    case INS_JPAKE3:
+                        JPake3(apdu);
+                        break;
                     case INS_SETKEY:
                         SetKey(apdu);
                         break;
@@ -362,18 +370,20 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     void JPake1(APDU apdu) {
         
         byte[] apdubuf = apdu.getBuffer();
-        short datalen = apdu.getIncomingLength();
+        //short datalen = apdu.getIncomingLength();
         
         //CHEC IF INCOMING APDU HAS THE RIGHT LENGTH
-        if(datalen != JPAKE1_TOTAL_DATASIZE) {
-            ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
-        }
+        //if(datalen != JPAKE1_TOTAL_DATASIZE) {
+          //  ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
+        //}
         
         short expectedDataLen = apdu.setIncomingAndReceive();
         // CHECK EXPECTED LENGTH 
         if (expectedDataLen != JPAKE2_TOTAL_DATASIZE) {
             ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
         }
+        short inDataOffset = apdu.getOffsetCdata();
+        short outDataOffset = apdu.getOffsetCdata();
         
                 //ALICESIM
 //        BigInteger x1 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
@@ -406,24 +416,24 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         
         //----------------------
         
-        byte [] G1Array = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE1_G1_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE1_G1_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
-        ECPoint G1 = ecCurve.decodePoint(G1Array);
-        byte [] V1Array = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE1_V1_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE1_V1_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        byte [] G1Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_G1_OFFSET_DATA, inDataOffset + JPAKE1_G1_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        G1 = ecCurve.decodePoint(G1Array);
+        byte [] V1Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_V1_OFFSET_DATA, inDataOffset+ JPAKE1_V1_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
         ECPoint V1 = ecCurve.decodePoint(V1Array);
         
-        byte [] r1Array = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE1_r1_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE1_r1_OFFSET_DATA + JPAKE_SCALARSIZE);
+        byte [] r1Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_r1_OFFSET_DATA, inDataOffset + JPAKE1_r1_OFFSET_DATA + JPAKE_SCALARSIZE);
         BigInteger  r1 = new BigInteger(1, r1Array);
         
-        byte [] G2Array = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE1_G2_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE1_G2_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        byte [] G2Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_G2_OFFSET_DATA, inDataOffset + JPAKE1_G2_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
         G2 = ecCurve.decodePoint(G2Array); //savet this for later!!!
-        byte [] V2Array = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE1_V2_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE1_V2_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        byte [] V2Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_V2_OFFSET_DATA, inDataOffset + JPAKE1_V2_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
         ECPoint V2 = ecCurve.decodePoint(V2Array);
         
-        byte [] r2Array = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE1_r2_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE1_r2_OFFSET_DATA + JPAKE_SCALARSIZE);
+        byte [] r2Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_r2_OFFSET_DATA, inDataOffset + JPAKE1_r2_OFFSET_DATA + JPAKE_SCALARSIZE);
         BigInteger  r2 = new BigInteger(1, r2Array);
         
         
-        if (!verifyZKP(Gen, G1, V1, r1, theirID) || verifyZKP(Gen, G2, V2, r2, theirID)) {
+        if (!verifyZKP(Gen, G1, V1, r1, theirID) || !verifyZKP(Gen, G2, V2, r2, theirID)) {
             //sheeeeit
             ISOException.throwIt(SW_JPAKE1_PROOF_FAILED);
         }
@@ -434,27 +444,16 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     	x4 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
     			n.subtract(BigInteger.ONE), new SecureRandom()); //save this for later
         
-        ECPoint G3 = Gen.multiply(x3);
-        ECPoint G4 = Gen.multiply(x4);
+        G3 = Gen.multiply(x3);
+        G4 = Gen.multiply(x4);
         
         SchnorrZKP zkpG3 = new SchnorrZKP();
         SchnorrZKP zkpG4 = new SchnorrZKP();
         zkpG3.generateZKP(Gen, n, x3, G3, mID);
         zkpG4.generateZKP(Gen, n, x4, G4, mID);
         
-        //STEP 2!
-        BigInteger s = org.bouncycastle.util.BigIntegers.fromUnsignedByteArray(m_rawpin);
-        
-        ECPoint GB = G1.add(G2).add(G3);
-        GA = G1.add(G3).add(G4); //save for later
-    	ECPoint B = GB.multiply(x4.multiply(s).mod(n));
-//				
-    	SchnorrZKP zkpG4s = new SchnorrZKP();
-    	zkpG4s.generateZKP(GB, n, x4.multiply(s).mod(n), B, mID);
-        
         byte [] r3 = zkpG3.r.toByteArray();
         byte [] r4 = zkpG4.r.toByteArray();
-        byte [] rx4s = zkpG4s.r.toByteArray();
         
         if(r3.length > 32) {
             r3 = Arrays.copyOfRange(r3, r3.length-32, r3.length);
@@ -462,22 +461,16 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         if(r4.length > 32) {
             r4 = Arrays.copyOfRange(r4, r4.length-32, r4.length);
         }
-        if(rx4s.length > 32) {
-            rx4s = Arrays.copyOfRange(rx4s, rx4s.length-32, rx4s.length);
-        }
         
         //Prepare JPAKE2 data
-        Util.arrayCopyNonAtomic(G3.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_G3_OFFSET_DATA + ISO7816.OFFSET_CDATA) , JPAKE_COMPRESSEDPOINTSIZE);
-        Util.arrayCopyNonAtomic(zkpG3.V.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_V3_OFFSET_DATA + ISO7816.OFFSET_CDATA) , JPAKE_COMPRESSEDPOINTSIZE);
-        Util.arrayCopyNonAtomic(r3, (short)0, apdubuf, (short)(JPAKE2_r3_OFFSET_DATA + ISO7816.OFFSET_CDATA) , JPAKE_SCALARSIZE);
-        Util.arrayCopyNonAtomic(G4.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_G4_OFFSET_DATA + ISO7816.OFFSET_CDATA) , JPAKE_COMPRESSEDPOINTSIZE);
-        Util.arrayCopyNonAtomic(zkpG4.V.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_V4_OFFSET_DATA + ISO7816.OFFSET_CDATA) , JPAKE_COMPRESSEDPOINTSIZE);
-        Util.arrayCopyNonAtomic(r4, (short)0, apdubuf, (short)(JPAKE2_r4_OFFSET_DATA + ISO7816.OFFSET_CDATA) , JPAKE_SCALARSIZE);
-        Util.arrayCopyNonAtomic(B.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_B_OFFSET_DATA + ISO7816.OFFSET_CDATA) , JPAKE_COMPRESSEDPOINTSIZE);
-        Util.arrayCopyNonAtomic(zkpG4s.V.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_Vx4s_OFFSET_DATA + ISO7816.OFFSET_CDATA) , JPAKE_COMPRESSEDPOINTSIZE);
-        Util.arrayCopyNonAtomic(rx4s, (short)0, apdubuf, (short)(JPAKE2_rx4s_OFFSET_DATA + ISO7816.OFFSET_CDATA) , JPAKE_SCALARSIZE);
+        Util.arrayCopyNonAtomic(G3.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_G3_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(zkpG3.V.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_V3_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(r3, (short)0, apdubuf, (short)(JPAKE2_r3_OFFSET_DATA + outDataOffset) , JPAKE_SCALARSIZE);
+        Util.arrayCopyNonAtomic(G4.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_G4_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(zkpG4.V.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_V4_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(r4, (short)0, apdubuf, (short)(JPAKE2_r4_OFFSET_DATA + outDataOffset) , JPAKE_SCALARSIZE);
         
-        apdu.setOutgoingAndSend(ISO7816.OFFSET_CDATA, expectedDataLen);
+        apdu.setOutgoingAndSend(outDataOffset, expectedDataLen);
         
         // ENCRYPT INCOMING BUFFER
       //  m_encryptCipher.doFinal(apdubuf, ISO7816.OFFSET_CDATA, dataLen, m_ramArray, (short) 0);
@@ -551,26 +544,21 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     
     
     void JPake3(APDU apdu) {
-        byte[] apdubuf = apdu.getBuffer();
-        short datalen = apdu.getIncomingLength();
-        
-        //CHEC IF INCOMING APDU HAS THE RIGHT LENGTH
-        if(datalen != JPAKE3_TOTAL_DATASIZE) {
-            ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
-        }
-        
+        byte [] apdubuf = apdu.getBuffer();
         short expectedDataLen = apdu.setIncomingAndReceive();
         // CHECK EXPECTED LENGTH 
-        if (expectedDataLen != 0) {
+        if (expectedDataLen != JPAKE4_TOTAL_DATASIZE) {
             ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
         }
+        short inDataOffset = apdu.getOffsetCdata();
+        short outDataOffset = apdu.getOffsetCdata();
         
-        byte [] AArray = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE3_A_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE3_A_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        byte [] AArray = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE3_A_OFFSET_DATA, inDataOffset + JPAKE3_A_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
         ECPoint A = ecCurve.decodePoint(AArray);
-        byte [] Vx2sArray = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE3_Vx2s_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE3_Vx2s_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        byte [] Vx2sArray = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE3_Vx2s_OFFSET_DATA, inDataOffset + JPAKE3_Vx2s_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
         ECPoint Vx2s = ecCurve.decodePoint(Vx2sArray);
         
-        byte [] rx2sArray = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE3_rx2s_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE3_rx2s_OFFSET_DATA + JPAKE_SCALARSIZE);
+        byte [] rx2sArray = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE3_rx2s_OFFSET_DATA, inDataOffset + JPAKE3_rx2s_OFFSET_DATA + JPAKE_SCALARSIZE);
         BigInteger  rx2s = new BigInteger(1, rx2sArray);
         
         if (!verifyZKP(GA, A, Vx2s, rx2s, theirID)) {
@@ -589,6 +577,26 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         }
         
         Ks.setKey(Karr, (short) 32);
+        
+        
+        ECPoint GB = G1.add(G2).add(G3);
+        GA = G1.add(G3).add(G4); //save for later
+    	ECPoint B = GB.multiply(x4.multiply(s).mod(n));
+//				
+    	SchnorrZKP zkpG4s = new SchnorrZKP();
+    	zkpG4s.generateZKP(GB, n, x4.multiply(s).mod(n), B, mID);
+        
+        byte [] rx4s = zkpG4s.r.toByteArray();
+        
+        if(rx4s.length > 32) {
+            rx4s = Arrays.copyOfRange(rx4s, rx4s.length-32, rx4s.length);
+        }
+        
+        Util.arrayCopyNonAtomic(B.getEncoded(true), (short)0, apdubuf, (short)(JPAKE4_B_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(zkpG4s.V.getEncoded(true), (short)0, apdubuf, (short)(JPAKE4_Vx4s_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(rx4s, (short)0, apdubuf, (short)(JPAKE4_rx4s_OFFSET_DATA + outDataOffset) , JPAKE_SCALARSIZE);
+        
+        apdu.setOutgoingAndSend(outDataOffset, expectedDataLen);
         
         GA = null;
         G2 = null;
