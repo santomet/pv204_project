@@ -4,9 +4,14 @@ import applets.AlmostSecureApplet;
 import cardTools.CardManager;
 import cardTools.RunConfig;
 import cardTools.Util;
+import java.math.BigInteger;
+import java.security.SecureRandom;
 
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
+import org.bouncycastle.jce.ECNamedCurveTable;
+import org.bouncycastle.jce.spec.ECParameterSpec;
+import org.bouncycastle.util.Arrays;
 
 /**
  * Test class.
@@ -29,6 +34,24 @@ public class SimpleAPDU {
         try {
             SimpleAPDU main = new SimpleAPDU();
             
+//            ECParameterSpec ecSpec = ECNamedCurveTable.getParameterSpec("prime256v1");
+//            BigInteger n = ecSpec.getN();
+//            
+//            BigInteger x3 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
+//    			n.subtract(BigInteger.ONE), new SecureRandom());
+//            
+//            byte [] arr = x3.toByteArray();
+//            byte [] arr2 = arr;
+//            if(arr.length >32) {
+//                arr2 = Arrays.copyOfRange(arr, arr.length-32, arr.length);
+//            }
+//           
+//            BigInteger x4 = new BigInteger(1, arr2);
+//            x4 = x4.and(x4);
+//            
+//            
+//            int ja = x3.compareTo(x4);
+            
             main.demoGetRandomDataCommand();
            //main.demoEncryptDecrypt();
            // main.demoUseRealCard();
@@ -37,6 +60,37 @@ public class SimpleAPDU {
         } catch (Exception ex) {
             System.out.println("Exception : " + ex);
         }
+    }
+    
+    public void demoAlmostSecure()  throws Exception {
+        // CardManager abstracts from real or simulated card, provide with applet AID
+        final CardManager cardMngr = new CardManager(true, APPLET_AID_BYTE);          
+        
+        // Get default configuration for subsequent connection to card (personalized later)
+        final RunConfig runCfg = RunConfig.getDefaultConfig();
+
+        // A) If running on physical card
+        // runCfg.setTestCardType(RunConfig.CARD_TYPE.PHYSICAL); // Use real card
+
+        // B) If running in the simulator 
+        runCfg.setAppletToSimulate(AlmostSecureApplet.class); // main class of applet to simulate
+        runCfg.setTestCardType(RunConfig.CARD_TYPE.JCARDSIMLOCAL); // Use local simulator
+
+        // Connect to first available card
+        // NOTE: selects target applet based on AID specified in CardManager constructor
+        System.out.print("Connecting to card...");
+        if (!cardMngr.Connect(runCfg)) {
+            System.out.println(" Failed.");
+        }
+        System.out.println(" Done.");
+
+        // Transmit single APDU
+        final ResponseAPDU response = cardMngr.transmit(new CommandAPDU(Util.hexStringToByteArray(STR_APDU_GETRANDOM)));
+        byte[] data = response.getData();
+        
+        final ResponseAPDU response2 = cardMngr.transmit(new CommandAPDU(0xB0, 0x54, 0x00, 0x00, data)); // Use other constructor for CommandAPDU
+        
+        System.out.println(response);
     }
 
     public void demoGetRandomDataCommand() throws Exception {
