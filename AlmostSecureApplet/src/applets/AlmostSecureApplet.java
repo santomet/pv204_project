@@ -603,7 +603,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         
         Kcurve = Kcurve.normalize();
         
-        BigInteger K = Kcurve.getXCoord().toBigInteger();
+        BigInteger K = getSHA256(Kcurve.getXCoord().toBigInteger());
         
         byte [] Karr = K.toByteArray();
         
