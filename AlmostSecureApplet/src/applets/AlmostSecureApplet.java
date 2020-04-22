@@ -528,7 +528,14 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         
         BigInteger s = org.bouncycastle.util.BigIntegers.fromUnsignedByteArray(m_rawpin);
         
-        BigInteger K = A.subtract(G2.multiply(x4.multiply(s).mod(n))).multiply(x4).getXCoord().toBigInteger();
+        BigInteger scal = x4.multiply(s).mod(n);
+        ECPoint Kcurve = G2.multiply(scal);
+        Kcurve = A.subtract(Kcurve);
+        Kcurve = Kcurve.multiply(x4);
+        
+        Kcurve = Kcurve.normalize();
+        
+        BigInteger K = Kcurve.getXCoord().toBigInteger();
         
         byte [] Karr = K.toByteArray();
         
@@ -541,8 +548,10 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         
         
         ECPoint GB = G1.add(G2).add(G3);
+        GB = GB.normalize();
     	ECPoint B = GB.multiply(x4.multiply(s).mod(n));
-//				
+        B = B.normalize();
+
     	SchnorrZKP zkpG4s = new SchnorrZKP();
     	zkpG4s.generateZKP(GB, n, x4.multiply(s).mod(n), B, mID);
         
@@ -558,6 +567,22 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         
         apdu.setOutgoingAndSend(outDataOffset, expectedDataLen);
 
+//        System.out.println("CARD:     --");
+//        System.out.println(Kcurve + " KCurve");
+//        System.out.println(K + " key");
+//        System.out.println(G1 + " G1");
+//        System.out.println(G2 + " G2");
+//        System.out.println(G3 + " G3");
+//        System.out.println(G4 + " G4");
+//        
+//        System.out.println(A + " A");
+//        System.out.println(B + " B");
+//        System.out.println(GA + " GA");
+//        System.out.println(GB + " GB");
+//        System.out.println(Vx2s + " Vx2s");
+//        System.out.println(rx2s + " rx2s");
+//        System.out.println(s + " s");
+        
     }
 
     // ENCRYPT INCOMING BUFFER
