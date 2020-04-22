@@ -11,8 +11,16 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
+import java.security.InvalidAlgorithmParameterException;
+import java.security.InvalidKeyException;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import javacard.framework.APDU;
+import javacard.framework.ISO7816;
+import javacard.framework.ISOException;
 import javacard.framework.OwnerPIN;
 import javacard.security.AESKey;
 import javacard.security.Key;
@@ -20,7 +28,14 @@ import javacard.security.KeyBuilder;
 import javacard.security.KeyPair;
 import javacard.security.RandomData;
 import javacard.security.Signature;
-import javacardx.crypto.Cipher;
+import javax.crypto.BadPaddingException;
+import javax.crypto.Cipher;
+import javax.crypto.IllegalBlockSizeException;
+import javax.crypto.NoSuchPaddingException;
+import javax.crypto.SecretKey;
+import javax.crypto.ShortBufferException;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.SecretKeySpec;
 
 import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
@@ -48,6 +63,8 @@ public class SimpleAPDU {
     private static final Integer JPAKE2_TOTAL_LENGTH = 196; 
     private static final Integer JPAKE3_TOTAL_LENGTH = 98;
     private static final Integer JPAKE4_TOTAL_LENGTH = 98;
+    private static final Integer MESSAGE_HEADER_LENGTH = 4;
+    private static final Integer MESSAGE_LENGTH_OFFSET = 3;
     private static final boolean COMPRESS_POINTS = true;
     private static final Integer ZKP_LENGTH = BIGINT_LENGTH + POINT_LENGTH;
     
@@ -57,6 +74,8 @@ public class SimpleAPDU {
     private static byte[] PC_ID     = null;
     private static byte[] PIN       = null;
     private static BigInteger SHARED_BIG_INT = null;
+    
+    private short counter = (short) 0x00;
     
     private ECParameterSpec ecSpec  = null;
     private ECCurve.Fp  ecCurve     = null;
@@ -76,7 +95,7 @@ public class SimpleAPDU {
     private BigInteger key = null;
     
     
-    private AESKey m_aesKey        = null;
+    private SecretKey m_aesKey     = null;
     private Cipher m_encryptCipher = null;
     private Cipher m_decryptCipher = null;
     private RandomData m_secureRandom = null;
@@ -97,12 +116,17 @@ public class SimpleAPDU {
         G = ecSpec.getG();
         n = ecSpec.getN();
         
-        // CREATE AES KEY OBJECT
-        m_aesKey = (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
-        
-        // CREATE OBJECTS FOR CBC CIPHERING
-        m_encryptCipher = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
-        m_decryptCipher = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
+       
+        try {
+            // CREATE OBJECTS FOR CBC CIPHERING
+            m_encryptCipher = Cipher.getInstance("AES/CBC/NoPadding");
+            m_decryptCipher = Cipher.getInstance("AES/CBC/NoPadding");
+        } catch (NoSuchAlgorithmException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (NoSuchPaddingException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        }
+
 
         // CREATE RANDOM DATA GENERATORS
         m_secureRandom = RandomData.getInstance(RandomData.ALG_SECURE_RANDOM);
@@ -140,6 +164,18 @@ public class SimpleAPDU {
                 cardMngr.transmit(main.deselectAPDU());
             }
             
+                    
+            byte[] testMessage = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
+            CommandAPDU testApdu = new CommandAPDU(0xB0, 0x04, 0x00, 0x00, testMessage);
+            CommandAPDU secTestApdu = main.secureWrapOutgoing(testApdu);
+            byte[] decrypted = main.secureUnwapOutgoing(secTestApdu);
+            
+            if (java.util.Arrays.equals(decrypted,testApdu.getBytes())){
+                System.out.println("Encryption - decryption for outgoing works");
+            } else {
+                System.out.println("Encryption - decryption for outgoing does NOT work");
+            }
+            
             /*
             
             Sending messeges
@@ -149,6 +185,7 @@ public class SimpleAPDU {
                              
         } catch (Exception ex) {
             System.out.println("Exception : " + ex);
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
         }
     }
     
@@ -308,7 +345,8 @@ public class SimpleAPDU {
         
         /* Computed K = (B - (G4 x [x2*s])) x [x2] to get a shared secret */
         pointK = B.subtract(pointG4.multiply(x2.multiply(SHARED_BIG_INT))).multiply(x2).normalize();
-        key = getSHA256(pointK.normalize().getXCoord().toBigInteger());
+        key = pointK.normalize().getXCoord().toBigInteger();
+        setKeyAES(key.toByteArray());
         return true;
     }
     
@@ -352,6 +390,74 @@ public class SimpleAPDU {
     	}
     	return new BigInteger(1, sha256.digest()); // 1 for positive int
     }
+    
+    
+    private void setKeyAES(byte[] newKey) {
+        try {
+            MessageDigest sha = MessageDigest.getInstance("SHA-1");
+            newKey = sha.digest(newKey);
+            newKey = Arrays.copyOf(newKey, 16); // use only first 128 bit
+
+            m_aesKey = new SecretKeySpec(newKey, "AES");
+            System.out.println(m_aesKey.getEncoded().length);
+            m_encryptCipher.init(Cipher.ENCRYPT_MODE, m_aesKey);
+            byte[] iv = m_encryptCipher.getIV();
+            m_decryptCipher.init(Cipher.DECRYPT_MODE, m_aesKey, new IvParameterSpec(iv));
+        } catch (InvalidKeyException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (InvalidAlgorithmParameterException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (NoSuchAlgorithmException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        }
+    }
+    
+    private CommandAPDU secureWrapOutgoing(CommandAPDU apdu){
+        byte[] apduBytes = apdu.getBytes();
+        byte[] messageHeader = {(byte) counter, 0x00, 0x00, (byte) apduBytes.length};
+        byte[] message = Arrays.concatenate(messageHeader, apduBytes);
+        int toFill = 240 - message.length;
+        if (toFill > 0) {
+            byte[] filling = new byte[toFill];
+            Arrays.fill(filling, (byte) 0x01);
+            message = Arrays.concatenate(message, filling);
+        }
+        try {
+            m_encryptCipher.doFinal(message, 0, message.length, message, 0);
+        } catch (ShortBufferException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (IllegalBlockSizeException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (BadPaddingException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        }
+        return new CommandAPDU(0xB0, 0x04, 0x00, 0x00, message);
+    }
+    
+    private byte[] secureUnwapOutgoing(CommandAPDU apdu) {
+        byte[] message = apdu.getData();
+        try {
+            m_decryptCipher.doFinal(message, 0, message.length, message, 0);
+        } catch (ShortBufferException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (IllegalBlockSizeException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (BadPaddingException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        }
+        
+        if (message[0] != (byte) counter){
+            System.err.println("Decryption - error - wrong counter ");
+            return new byte[0];
+        }
+        
+        // CHECK CHECKSUM
+        int apduLength = (message[MESSAGE_LENGTH_OFFSET] & 0xFF);
+        byte[] apduBytes = Arrays.copyOfRange(message, MESSAGE_HEADER_LENGTH, MESSAGE_HEADER_LENGTH + apduLength);
+        
+        return apduBytes;
+    } 
+    
     
     private SchnorrZKP generateZKP (ECPoint G, BigInteger n, BigInteger d, ECPoint D, byte[] userID) {
             /* Generate a proof of knowledge of scalar for D = [d] x G */
