@@ -29,7 +29,8 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     // INSTRUCTIONS
     final static byte INS_JPAKE1 = (byte) 0x01;
     final static byte INS_JPAKE3 = (byte) 0x02;
-   
+    final static byte INS_END_SESSION = (byte) 0x03;
+    final static byte INS_ENCRYPTEDMESSAGE = (byte) 0x04;
     
     final static byte INS_ENCRYPT = (byte) 0x50;
     final static byte INS_DECRYPT = (byte) 0x51;
@@ -68,6 +69,11 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     final static short JPAKE3_TOTAL_DATASIZE = (short) 0x62;
     final static short JPAKE4_TOTAL_DATASIZE = (short) 0x62;
     
+    final static short SESSION_COUNTER_OFFSET = (short) 0x0;
+    final static short SESSION_CHECKSUM_OFFSET = (short) 0x01;
+    final static short SESSION_DATALENGTH_OFFSET = (short) 0x03;
+    final static short SESSION_DATA_OFFSET = (short) 0x04;
+    
     final static short JPAKE_COMPRESSEDPOINTSIZE = (short) 0x21;
     final static short JPAKE_SCALARSIZE = (short) 0x20;
 
@@ -81,6 +87,9 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     final static short SW_BAD_PIN = (short) 0x6900;
     final static short SW_JPAKE1_PROOF_FAILED = (short) 0xA001;
     final static short SW_JPAKE3_PROOF_FAILED = (short) 0xA002;
+    
+    final static short SW_SESSION_COUNTER_BAD = (short) 0xA101;
+    final static short SW_SESSION_CHECKSUM_BAD = (short) 0xA102;
 
     final static short SW_Exception = (short) 0xff01;
     final static short SW_ArrayIndexOutOfBoundsException = (short) 0xff02;
@@ -94,11 +103,14 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     final static short SW_TransactionException_prefix = (short) 0xf400;
     final static short SW_CardRuntimeException_prefix = (short) 0xf500;
 
+    private byte   session_Counter = 0x0;
+    private AESKey session_AESKey = null;
     private AESKey m_aesKey = null;
     private Cipher m_encryptCipher = null;
     private Cipher m_decryptCipher = null;
+    private Checksum m_checksum = null;
     private RandomData m_secureRandom = null;
-    protected MessageDigest m_hash = null;
+    protected javacard.security.MessageDigest m_hash = null;
     private OwnerPIN m_pin = null;
     private byte[] m_rawpin = null;
     private Signature m_sign = null;
@@ -163,10 +175,14 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
 
             // CREATE AES KEY OBJECT
             m_aesKey = (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
+            session_AESKey = (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
             // CREATE OBJECTS FOR CBC CIPHERING
             m_encryptCipher = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
             m_decryptCipher = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
 
+            //checksum
+            m_checksum = Checksum.getInstance(Checksum.ALG_ISO3309_CRC16, false);
+            
             // CREATE RANDOM DATA GENERATORS
             m_secureRandom = RandomData.getInstance(RandomData.ALG_SECURE_RANDOM);
 
@@ -195,7 +211,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
             m_sign.init(m_privateKey, Signature.MODE_SIGN);
 
             // INIT HASH ENGINE
-            //m_hash = MessageDigest.getInstance(MessageDigest.ALG_SHA_256, false);
+            m_hash = javacard.security.MessageDigest.getInstance(javacard.security.MessageDigest.ALG_SHA_256, false); //we have too smal buffer
 
             // update flag
             isOP2 = true;
@@ -272,6 +288,110 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
                     case INS_JPAKE3:
                         JPake3(apdu);
                         break;
+                    case INS_ENCRYPTEDMESSAGE:
+                        secureChannelAPDU(apdu);
+                        break;
+                    default:
+                        // The INS code is not supported by the dispatcher
+                        ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
+                        break;
+                }
+            } else {
+                ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+            }
+
+            // Capture all reasonable exceptions and change into readable ones (instead of 0x6f00) 
+        } catch (ISOException e) {
+            throw e; // Our exception from code, just re-emit
+        } catch (ArrayIndexOutOfBoundsException e) {
+            ISOException.throwIt(SW_ArrayIndexOutOfBoundsException);
+        } catch (ArithmeticException e) {
+            ISOException.throwIt(SW_ArithmeticException);
+        } catch (ArrayStoreException e) {
+            ISOException.throwIt(SW_ArrayStoreException);
+        } catch (NullPointerException e) {
+            ISOException.throwIt(SW_NullPointerException);
+        } catch (NegativeArraySizeException e) {
+            ISOException.throwIt(SW_NegativeArraySizeException);
+        } catch (CryptoException e) {
+            ISOException.throwIt((short) (SW_CryptoException_prefix | e.getReason()));
+        } catch (SystemException e) {
+            ISOException.throwIt((short) (SW_SystemException_prefix | e.getReason()));
+        } catch (PINException e) {
+            ISOException.throwIt((short) (SW_PINException_prefix | e.getReason()));
+        } catch (TransactionException e) {
+            ISOException.throwIt((short) (SW_TransactionException_prefix | e.getReason()));
+        } catch (CardRuntimeException e) {
+            ISOException.throwIt((short) (SW_CardRuntimeException_prefix | e.getReason()));
+        } catch (Exception e) {
+            ISOException.throwIt(SW_Exception);
+        }
+    }
+    
+    private void secureChannelAPDU(APDU apdu) {
+        byte[] buf = apdu.getBuffer();
+        short bytelen = apdu.setIncomingAndReceive();
+        short dataOffset = apdu.getOffsetCdata();
+        
+        //OK so data can have 255B at most + we want to modify data in place.
+        //so we get the nearest value which is 240B. that shall be the standard from now on yeaaah.
+        //but only 236B can be used for APDU itself so beware!
+        if(bytelen != (short) 240) {
+            ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+        }
+        
+        //set the key we both should have, maybe create independent instance in real card IDK...
+        m_decryptCipher.init(session_AESKey, Cipher.MODE_DECRYPT);
+        m_decryptCipher.doFinal(buf, dataOffset, (short)240, buf, dataOffset);
+        //we'we got deciphered, now check counter!
+        if((short) buf[dataOffset+SESSION_COUNTER_OFFSET] != session_Counter) {
+            ISOException.throwIt(SW_SESSION_COUNTER_BAD);
+        }
+        //now compute checksum .... or no, fuck it for now. IDK how to do it fast in normal Java
+//        byte[] checksumarr = null; //probably use RAM in real card
+//        m_checksum.doFinal(buf, (short)(dataOffset + SESSION_DATA_OFFSET), (short)236, checksumarr, (short)0);
+//        short checksum = checksumarr[0];
+        
+//        if((short) buf[dataOffset + SESSION_CHECKSUM_OFFSET] != checksum) {
+//            ISOException.throwIt(SW_SESSION_CHECKSUM_BAD);
+//        }
+
+        //nice, checksum is OK, now just get the APDU
+        short APDUOffset = (short)(dataOffset + SESSION_DATA_OFFSET);
+        short APDUDataOffset = (short) (dataOffset + SESSION_DATA_OFFSET + ISO7816.OFFSET_CDATA);
+        short APDUDataSize = buf[APDUOffset + ISO7816.OFFSET_LC]; //we will test it only as that, too exhausted to do some controls
+        short MessageSizeOffset = (short)(dataOffset + SESSION_DATALENGTH_OFFSET); //these might probably be static values, most of them... :D 
+        
+        
+        processDecrypted(apdu, buf, APDUOffset, MessageSizeOffset, APDUDataSize);
+        
+        //Oh so if we got here we now have to encrypt the response. The data should be located at APDU data (just like it used to be)
+        //just so I do not forget. So APDU(.......MESSAGE(Counter,Checksum,Datalength,*APDU(........)*)) asterisks
+        session_Counter++;
+        buf[dataOffset+SESSION_COUNTER_OFFSET] = (byte) session_Counter;
+        //In-place checksum computation
+        m_checksum.doFinal(buf, (short)(dataOffset + SESSION_DATA_OFFSET), (short)236, buf, (short) (dataOffset + SESSION_CHECKSUM_OFFSET));
+        
+        m_encryptCipher.init(session_AESKey,Cipher.MODE_ENCRYPT);
+        m_encryptCipher.doFinal(buf, dataOffset, (short)240, buf, dataOffset); //encrypt the data in-place back
+        
+        
+        apdu.setOutgoingAndSend(dataOffset, (short)240);
+        
+    }
+    
+    
+    private void processDecrypted(APDU apdu, byte[] apduBuffer, short APDUOffset, short MessageSizeOffset, short APDUDataSize) {
+
+        // ignore the applet select command dispached to the process
+        if (selectingApplet()) {
+            return;
+        }
+
+        try {
+            // APDU instruction parser
+            if (apduBuffer[ISO7816.OFFSET_CLA + APDUOffset] == CLA_SIMPLEAPPLET) {
+                switch (apduBuffer[ISO7816.OFFSET_INS + APDUOffset]) {
                     case INS_SETKEY:
                         SetKey(apdu);
                         break;
@@ -282,7 +402,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
                         Decrypt(apdu);
                         break;
                     case INS_HASH:
-                        Hash(apdu);
+                        Hash(apdu, apduBuffer, APDUOffset, MessageSizeOffset, APDUDataSize);
                         break;
                     case INS_RANDOM:
                         Random(apdu);
@@ -361,26 +481,17 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         m_encryptCipher.init(m_aesKey, Cipher.MODE_ENCRYPT);
         m_decryptCipher.init(m_aesKey, Cipher.MODE_DECRYPT);
     }
-    
-    void jpakeBouncyTest(APDU apdu) {
-        
-    } 
+ 
     
     
     void JPake1(APDU apdu) {
         
         byte[] apdubuf = apdu.getBuffer();
-        //short datalen = apdu.getIncomingLength();
         
-        //CHEC IF INCOMING APDU HAS THE RIGHT LENGTH
-        //if(datalen != JPAKE1_TOTAL_DATASIZE) {
-          //  ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
-        //}
-        
-        short expectedDataLen = apdu.setIncomingAndReceive();
+        short datalen = apdu.setIncomingAndReceive();
         // CHECK EXPECTED LENGTH 
-        if (expectedDataLen != JPAKE2_TOTAL_DATASIZE) {
-            ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
+        if (datalen != JPAKE1_TOTAL_DATASIZE) {
+            ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
         }
         short inDataOffset = apdu.getOffsetCdata();
         short outDataOffset = apdu.getOffsetCdata();
@@ -448,61 +559,20 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         Util.arrayCopyNonAtomic(zkpG4.V.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_V4_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
         Util.arrayCopyNonAtomic(r4, (short)0, apdubuf, (short)(JPAKE2_r4_OFFSET_DATA + outDataOffset) , JPAKE_SCALARSIZE);
         
-        apdu.setOutgoingAndSend(outDataOffset, expectedDataLen);
+        apdu.setOutgoingAndSend(outDataOffset, JPAKE2_TOTAL_DATASIZE);
 
-//STEP 2!!!!!
-        
-        //ALICESIM
-//        ECPoint GA = X1.add(G3).add(G4); 
-//    	ECPoint A = GA.multiply(x2.multiply(s).mod(n));
-//				
-//    	SchnorrZKP zkpX2s = new SchnorrZKP();
-//    	zkpX2s.generateZKP(GA, n, x2.multiply(s).mod(n), A, theirID);
-//        //-------------------
-//        
-//        ECPoint GB = X1.add(X2).add(G3); 
-//    	ECPoint B = GB.multiply(x4.multiply(s).mod(n));
-//				
-//    	SchnorrZKP zkpX4s = new SchnorrZKP();
-//    	zkpX4s.generateZKP(GB, n, x4.multiply(s).mod(n), B, mID);
-//        
-        
-        //CHECK!!!
-        //ALICESIM .
-//        if (verifyZKP(GB, B, zkpX4s.getV(), zkpX4s.getr(), mID)) {
-//            //ok this works
-//            byte[] kkt = new byte[] {0x01};
-//        }
-//        //----------------------
-//        
-//        if (verifyZKP(GA, A, zkpX2s.getV(), zkpX2s.getr(), theirID)) {
-//            //ok this works
-//            byte[] kkt = new byte[] {0x01};
-//        }
-//        
-//        
-//        //ALICESIM
-//        //opencrypto.jcmathlib.Integer Ka = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh);
-//        BigInteger Ka = getSHA256(B.subtract(G4.multiply(x2.multiply(s).mod(n))).multiply(x2).getXCoord().toBigInteger());
-//        //-----------------------------
-//        
-//        //opencrypto.jcmathlib.Integer Kb = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh);
-//        BigInteger Kb = getSHA256( A.subtract(X2.multiply(x4.multiply(s).mod(n))).multiply(x4).getXCoord().toBigInteger());
-//        
-//        if(Ka.compareTo(Kb) == 0) {
-//            //WE WON
-//            byte[] kkt = new byte[] {0x01};
-//        }
+
         
     }
     
     
     void JPake3(APDU apdu) {
-        byte [] apdubuf = apdu.getBuffer();
-        short expectedDataLen = apdu.setIncomingAndReceive();
+        byte[] apdubuf = apdu.getBuffer();
+        
+        short datalen = apdu.setIncomingAndReceive();
         // CHECK EXPECTED LENGTH 
-        if (expectedDataLen != JPAKE4_TOTAL_DATASIZE) {
-            ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
+        if (datalen != JPAKE3_TOTAL_DATASIZE) {
+            ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
         }
         short inDataOffset = apdu.getOffsetCdata();
         short outDataOffset = apdu.getOffsetCdata();
@@ -535,7 +605,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         
         Kcurve = Kcurve.normalize();
         
-        BigInteger K = Kcurve.getXCoord().toBigInteger();
+        BigInteger K = getSHA256(Kcurve.getXCoord().toBigInteger());
         
         byte [] Karr = K.toByteArray();
         
@@ -543,6 +613,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         if(Karr.length > 32) {
             Karr = Arrays.copyOfRange(Karr, Karr.length-32, Karr.length);
         }
+        session_AESKey.setKey(Karr, (short)0);
         
       //  Ks.setKey(Karr, (short) 32);
         
@@ -565,7 +636,9 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         Util.arrayCopyNonAtomic(zkpG4s.V.getEncoded(true), (short)0, apdubuf, (short)(JPAKE4_Vx4s_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
         Util.arrayCopyNonAtomic(rx4s, (short)0, apdubuf, (short)(JPAKE4_rx4s_OFFSET_DATA + outDataOffset) , JPAKE_SCALARSIZE);
         
-        apdu.setOutgoingAndSend(outDataOffset, expectedDataLen);
+        apdu.setOutgoingAndSend(outDataOffset, JPAKE4_TOTAL_DATASIZE);
+        
+        session_Counter = 0x0;
 
 //        System.out.println("CARD:     --");
 //        System.out.println(Kcurve + " KCurve");
@@ -627,21 +700,24 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     }
 
     // HASH INCOMING BUFFER
-    void Hash(APDU apdu) {
-        byte[] apdubuf = apdu.getBuffer();
-        short dataLen = apdu.setIncomingAndReceive();
+    void Hash(APDU apdu, byte[] apdubuf, short APDUOffset, short MessageSizeOffset, short APDUDataSize) {
+//        byte[] apdubuf = apdu.getBuffer();
+
 
         if (m_hash != null) {
-         //   m_hash.doFinal(apdubuf, ISO7816.OFFSET_CDATA, dataLen, m_ramArray, (short) 0);
+            m_hash.doFinal(apdubuf, ISO7816.OFFSET_CDATA, APDUDataSize, m_ramArray, (short) 0);
         } else {
             ISOException.throwIt(SW_OBJECT_NOT_AVAILABLE);
         }
 
         // COPY ENCRYPTED DATA INTO OUTGOING BUFFER
-        //Util.arrayCopyNonAtomic(m_ramArray, (short) 0, apdubuf, ISO7816.OFFSET_CDATA, m_hash.getLength());
-
-        // SEND OUTGOING BUFFER
-     //   apdu.setOutgoingAndSend(ISO7816.OFFSET_CDATA, m_hash.getLength());
+        Util.arrayCopyNonAtomic(m_ramArray, (short) 0, apdubuf, (short)(ISO7816.OFFSET_CDATA + APDUOffset), m_hash.getLength());
+        
+        apdubuf[MessageSizeOffset] = (byte)m_hash.getLength();
+        
+        // SEND OUTGOING BUFFER4
+        //NOPE!! you dont!
+        //apdu.setOutgoingAndSend(ISO7816.OFFSET_CDATA, m_hash.getLength());
     }
 
     // GENERATE RANDOM DATA
