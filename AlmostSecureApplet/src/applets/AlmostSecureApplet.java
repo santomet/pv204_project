@@ -65,8 +65,8 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     
     final static short JPAKE1_TOTAL_DATASIZE = (short) 0xC4;
     final static short JPAKE2_TOTAL_DATASIZE = (short) 0xC4;
-    final static short JPAKE3_TOTAL_DATASIZE = (short) 0x63;
-    final static short JPAKE4_TOTAL_DATASIZE = (short) 0x63;
+    final static short JPAKE3_TOTAL_DATASIZE = (short) 0x62;
+    final static short JPAKE4_TOTAL_DATASIZE = (short) 0x62;
     
     final static short JPAKE_COMPRESSEDPOINTSIZE = (short) 0x21;
     final static short JPAKE_SCALARSIZE = (short) 0x20;
@@ -384,38 +384,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         }
         short inDataOffset = apdu.getOffsetCdata();
         short outDataOffset = apdu.getOffsetCdata();
-        
-                //ALICESIM
-//        BigInteger x1 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
-//    			n.subtract(BigInteger.ONE), new SecureRandom());
-//    	BigInteger x2 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
-//    			n.subtract(BigInteger.ONE), new SecureRandom());
-//        
-//        ECPoint X1 = Gen.multiply(x1);
-//        ECPoint X2 = Gen.multiply(x2);
-//        
-//        SchnorrZKP zkpX1 = new SchnorrZKP();
-//        SchnorrZKP zkpX2 = new SchnorrZKP();
-//        zkpX1.generateZKP(Gen, n, x1, X1, theirID);
-//        zkpX2.generateZKP(Gen,  n, x2, X2, theirID);
-//        
-//        byte [] G1Array = X1.getEncoded(true);
-//        byte [] V1Array = zkpX1.V.getEncoded(true);
-//        byte [] r1Array = zkpX1.r.toByteArray();
-//        byte [] G2Array = X2.getEncoded(true);
-//        byte [] V2Array = zkpX2.V.getEncoded(true);
-//        byte [] r2Array = zkpX2.r.toByteArray();
-//        
-//        if(r1Array.length > 32) {
-//            r1Array = Arrays.copyOfRange(r1Array, r1Array.length-32, r1Array.length);
-//        }
-//        
-//        if(r2Array.length > 32) {
-//            r2Array = Arrays.copyOfRange(r2Array, r2Array.length-32, r2Array.length);
-//        }
-        
-        //----------------------
-        
+                
         byte [] G1Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_G1_OFFSET_DATA, inDataOffset + JPAKE1_G1_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
         G1 = ecCurve.decodePoint(G1Array);
         byte [] V1Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_V1_OFFSET_DATA, inDataOffset+ JPAKE1_V1_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
@@ -471,30 +440,6 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         Util.arrayCopyNonAtomic(r4, (short)0, apdubuf, (short)(JPAKE2_r4_OFFSET_DATA + outDataOffset) , JPAKE_SCALARSIZE);
         
         apdu.setOutgoingAndSend(outDataOffset, expectedDataLen);
-        
-        // ENCRYPT INCOMING BUFFER
-      //  m_encryptCipher.doFinal(apdubuf, ISO7816.OFFSET_CDATA, dataLen, m_ramArray, (short) 0);
-        // NOTE: In-place encryption directly with apdubuf as output can be performed. m_ramArray used to demonstrate Util.arrayCopyNonAtomic
-
-        // COPY ENCRYPTED DATA INTO OUTGOING BUFFER
-      //  Util.arrayCopyNonAtomic(m_ramArray, (short) 0, apdubuf, ISO7816.OFFSET_CDATA, dataLen);
-
-        // SEND OUTGOING BUFFER
-      //  apdu.setOutgoingAndSend(ISO7816.OFFSET_CDATA, dataLen);
-        
-        
-        
-        //ALICESIM
-        //check ID we need valid identity but whatever, this can be static, ID is a public information
-//        if (verifyZKP(Gen, G3, zkpX3.getV(), zkpX3.getr(), mID) && verifyZKP(Gen, G4, zkpX4.getV(), zkpX4.getr(), mID)) {
-//            //ok this works
-//            byte[] kkt = new byte[] {0x01};
-//        }
-        //----------------------------------
-        
-        
-        
-      //  BigInteger s = org.bouncycastle.util.BigIntegers.fromUnsignedByteArray(m_rawpin);
 
 //STEP 2!!!!!
         
@@ -553,6 +498,8 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         short inDataOffset = apdu.getOffsetCdata();
         short outDataOffset = apdu.getOffsetCdata();
         
+        GA = G1.add(G3).add(G4); //save for later
+        
         byte [] AArray = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE3_A_OFFSET_DATA, inDataOffset + JPAKE3_A_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
         ECPoint A = ecCurve.decodePoint(AArray);
         byte [] Vx2sArray = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE3_Vx2s_OFFSET_DATA, inDataOffset + JPAKE3_Vx2s_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
@@ -576,11 +523,10 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
             Karr = Arrays.copyOfRange(Karr, Karr.length-32, Karr.length);
         }
         
-        Ks.setKey(Karr, (short) 32);
+      //  Ks.setKey(Karr, (short) 32);
         
         
         ECPoint GB = G1.add(G2).add(G3);
-        GA = G1.add(G3).add(G4); //save for later
     	ECPoint B = GB.multiply(x4.multiply(s).mod(n));
 //				
     	SchnorrZKP zkpG4s = new SchnorrZKP();
@@ -597,10 +543,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         Util.arrayCopyNonAtomic(rx4s, (short)0, apdubuf, (short)(JPAKE4_rx4s_OFFSET_DATA + outDataOffset) , JPAKE_SCALARSIZE);
         
         apdu.setOutgoingAndSend(outDataOffset, expectedDataLen);
-        
-        GA = null;
-        G2 = null;
-        x4 = null;
+
     }
 
     // ENCRYPT INCOMING BUFFER
