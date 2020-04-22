@@ -60,7 +60,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     
     final static short JPAKE3_A_OFFSET_DATA = (short) 0x0;
     final static short JPAKE3_Vx2s_OFFSET_DATA = (short) 0x21;
-    final static short JPAKE3_rx2s_DATA = (short) 0x42;
+    final static short JPAKE3_rx2s_OFFSET_DATA = (short) 0x42;
     
     final static short JPAKE1_TOTAL_DATASIZE = (short) 0x196;
     final static short JPAKE2_TOTAL_DATASIZE = (short) 0x294;
@@ -77,6 +77,8 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     final static short SW_CIPHER_DATA_LENGTH_BAD = (short) 0x6710;
     final static short SW_OBJECT_NOT_AVAILABLE = (short) 0x6711;
     final static short SW_BAD_PIN = (short) 0x6900;
+    final static short SW_JPAKE1_PROOF_FAILED = (short) 0xA001;
+    final static short SW_JPAKE3_PROOF_FAILED = (short) 0xA002;
 
     final static short SW_Exception = (short) 0xff01;
     final static short SW_ArrayIndexOutOfBoundsException = (short) 0xff02;
@@ -103,10 +105,12 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     private Key m_publicKey = null;
     
     //EC and schnorr
-    protected ECPoint         Gen = null;
-    protected ECPoint         G3 = null;
-    protected ECPoint         G4 = null;
+    protected ECPoint         Gen = null; //generator point 
+    protected ECPoint         G2 = null;
+    protected ECPoint         GA = null;
     private BigInteger        n = null;
+    private BigInteger        x4 = null;
+    private AESKey            Ks = null; //AES session key
     
     protected ECParameterSpec   ecSpec = null;
     protected ECCurve.Fp        ecCurve = null;
@@ -358,8 +362,15 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     void JPake1(APDU apdu) {
         
         byte[] apdubuf = apdu.getBuffer();
+        short datalen = apdu.getIncomingLength();
+        
+        //CHEC IF INCOMING APDU HAS THE RIGHT LENGTH
+        if(datalen != JPAKE1_TOTAL_DATASIZE) {
+            ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
+        }
+        
         short expectedDataLen = apdu.setIncomingAndReceive();
-        // CHECK EXPECTED LENGTH (MULTIPLY OF AES BLOCK LENGTH)
+        // CHECK EXPECTED LENGTH 
         if (expectedDataLen != JPAKE2_TOTAL_DATASIZE) {
             ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
         }
@@ -404,7 +415,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         BigInteger  r1 = new BigInteger(1, r1Array);
         
         byte [] G2Array = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE1_G2_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE1_G2_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
-        ECPoint G2 = ecCurve.decodePoint(G2Array);
+        G2 = ecCurve.decodePoint(G2Array); //savet this for later!!!
         byte [] V2Array = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE1_V2_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE1_V2_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
         ECPoint V2 = ecCurve.decodePoint(V2Array);
         
@@ -412,21 +423,19 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         BigInteger  r2 = new BigInteger(1, r2Array);
         
         
-        if (verifyZKP(Gen, G1, V1, r1, theirID) && verifyZKP(Gen, G2, V2, r2, theirID)) {
-            //ok this works
-            byte[] kkt = new byte[] {0x01};
+        if (!verifyZKP(Gen, G1, V1, r1, theirID) || verifyZKP(Gen, G2, V2, r2, theirID)) {
+            //sheeeeit
+            ISOException.throwIt(SW_JPAKE1_PROOF_FAILED);
         }
-        
-        
 
         
         BigInteger x3 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
     			n.subtract(BigInteger.ONE), new SecureRandom());
-    	BigInteger x4 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
-    			n.subtract(BigInteger.ONE), new SecureRandom());
+    	x4 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
+    			n.subtract(BigInteger.ONE), new SecureRandom()); //save this for later
         
-        G3 = Gen.multiply(x3);
-        G4 = Gen.multiply(x4);
+        ECPoint G3 = Gen.multiply(x3);
+        ECPoint G4 = Gen.multiply(x4);
         
         SchnorrZKP zkpG3 = new SchnorrZKP();
         SchnorrZKP zkpG4 = new SchnorrZKP();
@@ -437,6 +446,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         BigInteger s = org.bouncycastle.util.BigIntegers.fromUnsignedByteArray(m_rawpin);
         
         ECPoint GB = G1.add(G2).add(G3);
+        GA = G1.add(G3).add(G4); //save for later
     	ECPoint B = GB.multiply(x4.multiply(s).mod(n));
 //				
     	SchnorrZKP zkpG4s = new SchnorrZKP();
@@ -537,6 +547,52 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
 //            byte[] kkt = new byte[] {0x01};
 //        }
         
+    }
+    
+    
+    void JPake3(APDU apdu) {
+        byte[] apdubuf = apdu.getBuffer();
+        short datalen = apdu.getIncomingLength();
+        
+        //CHEC IF INCOMING APDU HAS THE RIGHT LENGTH
+        if(datalen != JPAKE3_TOTAL_DATASIZE) {
+            ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
+        }
+        
+        short expectedDataLen = apdu.setIncomingAndReceive();
+        // CHECK EXPECTED LENGTH 
+        if (expectedDataLen != 0) {
+            ISOException.throwIt(SW_CIPHER_DATA_LENGTH_BAD);
+        }
+        
+        byte [] AArray = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE3_A_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE3_A_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        ECPoint A = ecCurve.decodePoint(AArray);
+        byte [] Vx2sArray = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE3_Vx2s_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE3_Vx2s_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        ECPoint Vx2s = ecCurve.decodePoint(Vx2sArray);
+        
+        byte [] rx2sArray = Arrays.copyOfRange(apdubuf, ISO7816.OFFSET_CDATA + JPAKE3_rx2s_OFFSET_DATA, ISO7816.OFFSET_CDATA + JPAKE3_rx2s_OFFSET_DATA + JPAKE_SCALARSIZE);
+        BigInteger  rx2s = new BigInteger(1, rx2sArray);
+        
+        if (!verifyZKP(GA, A, Vx2s, rx2s, theirID)) {
+            //sheeeeeeeeit
+            ISOException.throwIt(SW_JPAKE3_PROOF_FAILED);
+        }
+        
+        BigInteger s = org.bouncycastle.util.BigIntegers.fromUnsignedByteArray(m_rawpin);
+        
+        BigInteger K = getSHA256( A.subtract(G2.multiply(x4.multiply(s).mod(n))).multiply(x4).getXCoord().toBigInteger());
+        
+        byte [] Karr = K.toByteArray();
+        
+        if(Karr.length > 32) {
+            Karr = Arrays.copyOfRange(Karr, Karr.length-32, Karr.length);
+        }
+        
+        Ks.setKey(Karr, (short) 32);
+        
+        GA = null;
+        G2 = null;
+        x4 = null;
     }
 
     // ENCRYPT INCOMING BUFFER
