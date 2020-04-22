@@ -44,8 +44,8 @@ public class SimpleAPDU {
     private static final byte[] CARD_ID = new byte[]{'c', 'a', 'r', 'd'};
     private static final byte[] PC_ID = new byte[]{'u', 's', 'e', 'r'};
     
-    private static ECParameterSpec ecSpec = ECNamedCurveTable.getParameterSpec("secp256r1");
-    private static ECCurve ecCurve = ecSpec.getCurve();
+    private static ECParameterSpec ecSpec = ECNamedCurveTable.getParameterSpec("prime256v1");
+    private static ECCurve.Fp ecCurve = (ECCurve.Fp) ecSpec.getCurve();
     private static ECPoint G = ecSpec.getG();
     private static BigInteger q = ecCurve.getCofactor();
     private static BigInteger n = ecSpec.getN();
@@ -96,14 +96,10 @@ public class SimpleAPDU {
         }
         System.out.println(" Done.");
 
-        // Transmit single APDU
-        //final ResponseAPDU response = cardMngr.transmit(new CommandAPDU(Util.hexStringToByteArray(STR_APDU_GETRANDOM)));
-        //byte[] data = response.getData();
         
         byte[] APDUdata = JPAKE1();
         pointG1 = pointG1.normalize();
         pointG2 = pointG2.normalize();
-        System.out.println(APDUdata.length);
         
         final ResponseAPDU response = cardMngr.transmit(new CommandAPDU(0xB0, 0x01, 0x00, 0x00, APDUdata, 196)); // Use other constructor for CommandAPDU
         byte[] responseData = response.getData();
@@ -112,20 +108,14 @@ public class SimpleAPDU {
             System.out.println(" JPAKE2 fail.");
         }
         byte[] APDUdata3 = JPAKE3();
-        System.out.println(APDUdata3.length);
         
         final ResponseAPDU response3 = cardMngr.transmit(new CommandAPDU(0xB0, 0x02, 0x00, 0x00, APDUdata3, 98)); // Use other constructor for CommandAPDU
         byte[] responseData3 = response3.getData();
         
-        if (!JPAKE4(responseData)){
+        if (!JPAKE4(responseData3)){
             System.out.println(" JPAKE4 fail.");
         }
-        
-        
-        System.out.println(response);
-        System.out.println();
-        System.out.println(responseData.length);
-        System.out.println();
+
     }
    
 
@@ -177,13 +167,13 @@ public class SimpleAPDU {
         SchnorrZKP zkpx4 = new SchnorrZKP(zkpBytes);
         
         /* Verify ZKP of x3, x4 */
-        if (verifyZKP(ecCurve, G, n, pointG3, zkpx3, CARD_ID) ){
+        if (verifyZKP(G, pointG3, zkpx3.getV(), zkpx3.getr(), CARD_ID) ){
             System.out.println("ZKP x3 OK.");
         } else {
             System.out.println("ZKP x3 failed.");
             return false;
         }
-        if (verifyZKP(ecCurve, G, n, pointG4, zkpx4, CARD_ID) ){
+        if (verifyZKP(G, pointG4, zkpx4.getV(), zkpx4.getr(), CARD_ID) ){
             System.out.println("ZKP x4 OK.");
         } else {
             System.out.println("ZKP x4 failed.");
@@ -217,16 +207,16 @@ public class SimpleAPDU {
         byte[] zkpBytes = new byte[ZKP_LENGTH];
         
         /* Compute GB = G1 + G2 + G3 */
-        ECPoint GB = pointG1.add(pointG2).add(pointG3);
+        ECPoint GB = pointG1.add(pointG2).add(pointG3).normalize();
         
         /* Get B = (G1 + G2 + G3) x [x4*s] and a ZKP for x4*s */
         stream.read(pointBytes, 0, POINT_LENGTH);
-        ECPoint B = ecCurve.decodePoint(pointBytes);
+        ECPoint B = ecCurve.decodePoint(pointBytes).normalize();
         stream.read(zkpBytes, 0, ZKP_LENGTH);
         SchnorrZKP zkpx4s = new SchnorrZKP(zkpBytes);   
         
         /* Verify ZKP of x4*s */
-        if (verifyZKP(ecCurve, GB, n, B, zkpx4s, CARD_ID) ){
+        if (verifyZKP(GB, B, zkpx4s.getV(), zkpx4s.getr(), CARD_ID) ){
             System.out.println("ZKP x4*s OK.");
         } else {
             System.out.println("ZKP x4*s failed.");
@@ -239,16 +229,7 @@ public class SimpleAPDU {
         return true;
     }
     
-/*    private void jpakeWithoutCard() throws IOException {
-        AlmostCard card = new AlmostCard();
-        
-        byte[] apduData1 = new byte[1];
-        byte[] response = card.processJPAKE(apduData1);
-        
-        card.processJPAKE2(apduData2);
-        card.compareResultJPAKE(key);
-    }
-*/    
+  
     private byte[] toByteWithoutSign(BigInteger bigInt) {
         // Not used now
         // removes first byte from BigInteger byte representation
@@ -264,36 +245,6 @@ public class SimpleAPDU {
         return array;
     }
     
-    /*
-        Encodes data for first APDU in JPAKE
-    */
-/*    private byte[] jpakeFirstApdu(ECPoint pointG1, ECPoint pointG2, SchnorrZKP zkpx1,SchnorrZKP zkpx2) throws IOException {
-        ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
-        
-        byteStream.write(pointG1.getEncoded(COMPRESS_POINTS));
-        byteStream.write(zkpx1.toByteArray());
-        
-        byteStream.write(pointG2.getEncoded(COMPRESS_POINTS));
-        byteStream.write(zkpx2.toByteArray());
-                
-        byte[] apduData = byteStream.toByteArray();
-        byteStream.close();
-        return apduData;
-    }*/
-
-    /*
-        Encodes data for second APDU in JPAKE
-    */
-/*    private byte[] jpakeSecondApdu(ECPoint A, SchnorrZKP zkpx2s) throws IOException {
-        ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
-        
-        byteStream.write(A.normalize().getEncoded(COMPRESS_POINTS));
-        byteStream.write(zkpx2s.toByteArray());
-        
-        byte[] apduData = byteStream.toByteArray();
-        byteStream.close();
-        return apduData;
-    }*/
     
     private BigInteger getSHA256(ECPoint G, ECPoint V, ECPoint D, byte[] userID) {
     	MessageDigest sha256 = null;
@@ -347,37 +298,50 @@ public class SimpleAPDU {
             return new SchnorrZKP(V,r);
     }
     
-    private boolean verifyZKP(ECCurve ecCurve, ECPoint G, BigInteger n, ECPoint D, SchnorrZKP zkp, byte[] userID) {
-    	/* ZKP: {V=G*v, r} */    	    	
-    	BigInteger c = getSHA256(G, zkp.getV(), D, userID);
-    	
-    	// 1. X != infinity
-    	if (D.isInfinity()){
-    		return false;
-    	}
-    				
-    	// Check X lies on the curve
-    	try {
-    		ecCurve.decodePoint(D.getEncoded(true));
-    	}
-    	catch(Exception e){
-    		e.printStackTrace();
-    		return false;
-    	}
-    	
-    	// 4. Check that nX = infinity.
-    	if (!D.multiply(n).isInfinity()) { 
-    		return false;
-    	}
-    	
-    	// Now check if V = G*r + X*h. 
-    	// Given that {G, X} are valid points on curve, the equality implies that V is also a point on curve.
-    	if (zkp.getV().equals(G.multiply(zkp.getr()).add(D.multiply(c.mod(n))))) {
-    		return true;
-    	}
-    	else {
-    		return false;
-    	}
+    public boolean verifyZKP(ECPoint generator, ECPoint X, ECPoint V, BigInteger r, byte[] userID) {
+       
+        /* ZKP: {V=G*v, r} */              
+        BigInteger h = getSHA256(generator, V, X, userID);
+       
+        // Public key validation based on p. 25
+        // http://cs.ucsb.edu/~koc/ccs130h/notes/ecdsa-cert.pdf
+       
+        // 1. X != infinity
+        if (X.isInfinity()){
+            return false;
+        }
+       
+        // 2. Check x and y coordinates are in Fq, i.e., x, y in [0, q-1]
+        if (X.getXCoord().toBigInteger().compareTo(BigInteger.ZERO) == -1 ||
+                X.getXCoord().toBigInteger().compareTo(ecCurve.getQ().subtract(BigInteger.ONE)) == 1 ||
+                X.getYCoord().toBigInteger().compareTo(BigInteger.ZERO) == -1 ||
+                X.getYCoord().toBigInteger().compareTo(ecCurve.getQ().subtract(BigInteger.ONE)) == 1) {
+            return false;
+        }
+                   
+        // 3. Check X lies on the curve
+        try {
+            ecCurve.decodePoint(X.getEncoded(false));
+        }
+        catch(Exception e){
+            e.printStackTrace();
+            return false;
+        }
+       
+        // 4. Check that nX = infinity.
+        // It is equivalent - but more more efficient - to check the coFactor*X is not infinity
+        if (X.multiply(ecSpec.getH()).isInfinity()) {
+            return false;
+        }
+       
+        // Now check if V = G*r + X*h.
+        // Given that {G, X} are valid points on curve, the equality implies that V is also a point on curve.
+        if (V.equals(generator.multiply(r).add(X.multiply(h.mod(n))))) {
+            return true;
+        }
+        else {
+            return false;
+        }
     }
     
     private class SchnorrZKP {
@@ -396,7 +360,7 @@ public class SimpleAPDU {
             /*
               Constructor which decodes a point and a number from byte array.
             */
-            this.V = ecCurve.decodePoint(Arrays.copyOfRange(encoded, 0, POINT_LENGTH));
+            this.V = ecCurve.decodePoint(Arrays.copyOfRange(encoded, 0, POINT_LENGTH)).normalize();
             this.r = new BigInteger(1,Arrays.copyOfRange(encoded, POINT_LENGTH, ZKP_LENGTH));
         }
         
@@ -472,12 +436,12 @@ public class SimpleAPDU {
             SchnorrZKP zkpx2 = new SchnorrZKP(zkpBytes);
             
             /* Verify ZKP of x1, x2 */
-            if (verifyZKP(ecCurve, G, n, pointG1, zkpx1, PC_ID) ){
+            if (verifyZKP(G, pointG1, zkpx1.getV(), zkpx1.getr(), PC_ID) ){
                 System.out.println("ZKP x1 OK.");
             } else {
                 System.out.println("ZKP x1 failed.");
             }
-            if (verifyZKP(ecCurve, G, n, pointG2, zkpx2, PC_ID) ){
+            if (verifyZKP(G, pointG2, zkpx2.getV(), zkpx2.getr(), PC_ID) ){
                 System.out.println("ZKP x2 OK.");
             } else {
                 System.out.println("ZKP x2 failed.");
@@ -538,7 +502,7 @@ public class SimpleAPDU {
             stream.close();
             
             /* Verify ZKP of x2*s */
-            if (verifyZKP(ecCurve, GA, n, A, zkpx2s, PC_ID) ){
+            if (verifyZKP(GA, A, zkpx2s.getV(), zkpx2s.getr(), PC_ID) ){
                 System.out.println("ZKP x2*s OK.");
             } else {
                 System.out.println("ZKP x2*s failed.");
