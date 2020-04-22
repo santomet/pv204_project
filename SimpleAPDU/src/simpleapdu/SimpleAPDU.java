@@ -1,13 +1,17 @@
 package simpleapdu;
 
-import org.bouncycastle.jce.spec.ECParameterSpec;
 import org.bouncycastle.math.ec.ECCurve;
 import org.bouncycastle.math.ec.ECPoint;
 import applets.AlmostSecureApplet;
 import cardTools.CardManager;
 import cardTools.RunConfig;
 import cardTools.Util;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 
 import javax.smartcardio.CommandAPDU;
@@ -30,22 +34,34 @@ public class SimpleAPDU {
 
     private static final String STR_APDU_GETRANDOM = "B054100000";
     
-    private static final Integer BIGINT_LENGTH = 33; 
+    private static final Integer BIGINT_LENGTH = 32; 
     private static final Integer POINT_LENGTH = 33;
     private static final boolean COMPRESS_POINTS = true;
     private static final Integer ZKP_LENGTH = BIGINT_LENGTH + POINT_LENGTH;
     
     private static final byte[] PIN = {0x01, 0x02, 0x03, 0x04};
     private static final BigInteger SHARED_BIG_INT = BigIntegers.fromUnsignedByteArray(PIN);
-    private static final String CARD_ID = "Card ID";
-    private static final String PC_ID = "PC ID";
+    private static final byte[] CARD_ID = new byte[]{'c', 'a', 'r', 'd'};
+    private static final byte[] PC_ID = new byte[]{'u', 's', 'e', 'r'};
     
     private static ECParameterSpec ecSpec = ECNamedCurveTable.getParameterSpec("secp256r1");
     private static ECCurve ecCurve = ecSpec.getCurve();
     private static ECPoint G = ecSpec.getG();
-    private static BigInteger q = ecSpec.getCurve().getCofactor();
+    private static BigInteger q = ecCurve.getCofactor();
     private static BigInteger n = ecSpec.getN();
 
+    private BigInteger x1 = null;
+    private BigInteger x2 = null;
+    private ECPoint pointG1 = null;
+    private ECPoint pointG2 = null;
+    private ECPoint pointG3 = null;
+    private ECPoint pointG4 = null;
+    private ECPoint pointK = null;
+    private BigInteger key = null;
+    private ECPoint GA = null;
+    private ECPoint A = null;
+        
+    
     /**
      * Main entry point.
      *
@@ -53,21 +69,20 @@ public class SimpleAPDU {
      */
     public static void main(String[] args) {
         try {
-            jpakeWithoutCard();                 
+            SimpleAPDU main = new SimpleAPDU();
+            main.demoAlmostSecure();
+//            main.jpakeWithoutCard();                 
         } catch (Exception ex) {
             System.out.println("Exception : " + ex);
         }
     }
     
-    public void demoAlmostSecure()  throws Exception {
+    private void demoAlmostSecure()  throws Exception {
         // CardManager abstracts from real or simulated card, provide with applet AID
-        final CardManager cardMngr = new CardManager(true, APPLET_AID_BYTE);          
+        final CardManager cardMngr = new CardManager(true, APPLET_AID_BYTE); 
         
         // Get default configuration for subsequent connection to card (personalized later)
         final RunConfig runCfg = RunConfig.getDefaultConfig();
-
-        // A) If running on physical card
-        // runCfg.setTestCardType(RunConfig.CARD_TYPE.PHYSICAL); // Use real card
 
         // B) If running in the simulator 
         runCfg.setAppletToSimulate(AlmostSecureApplet.class); // main class of applet to simulate
@@ -82,114 +97,54 @@ public class SimpleAPDU {
         System.out.println(" Done.");
 
         // Transmit single APDU
-        final ResponseAPDU response = cardMngr.transmit(new CommandAPDU(Util.hexStringToByteArray(STR_APDU_GETRANDOM)));
-        byte[] data = response.getData();
+        //final ResponseAPDU response = cardMngr.transmit(new CommandAPDU(Util.hexStringToByteArray(STR_APDU_GETRANDOM)));
+        //byte[] data = response.getData();
         
-        final ResponseAPDU response2 = cardMngr.transmit(new CommandAPDU(0xB0, 0x54, 0x00, 0x00, data)); // Use other constructor for CommandAPDU
+        byte[] APDUdata = JPAKE1();
+        pointG1 = pointG1.normalize();
+        pointG2 = pointG2.normalize();
+        System.out.println(APDUdata.length);
+        
+        final ResponseAPDU response = cardMngr.transmit(new CommandAPDU(0xB0, 0x01, 0x00, 0x00, APDUdata, 196)); // Use other constructor for CommandAPDU
+        byte[] responseData = response.getData();
+        
+        if (!JPAKE2(responseData)){
+            System.out.println(" JPAKE2 fail.");
+        }
+        byte[] APDUdata3 = JPAKE3();
+        System.out.println(APDUdata3.length);
+        
+        final ResponseAPDU response3 = cardMngr.transmit(new CommandAPDU(0xB0, 0x02, 0x00, 0x00, APDUdata3, 98)); // Use other constructor for CommandAPDU
+        byte[] responseData3 = response3.getData();
+        
+        if (!JPAKE4(responseData)){
+            System.out.println(" JPAKE4 fail.");
+        }
+        
         
         System.out.println(response);
+        System.out.println();
+        System.out.println(responseData.length);
+        System.out.println();
     }
+   
 
-    public void jpakeWithoutCard() {
-        AlmostCard card = new AlmostCard();
-        
+    private byte[] JPAKE1() throws IOException {
         /* get random x1, x2 from [1, n-1] */
-        BigInteger x1 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
+        x1 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
     			n.subtract(BigInteger.ONE), new SecureRandom());
-    	BigInteger x2 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
+    	x2 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
     			n.subtract(BigInteger.ONE), new SecureRandom());
     	
         /* compute G x [x1], G x [x2] */
-        ECPoint pointG1 = G.multiply(x1);
-        ECPoint pointG2 = G.multiply(x2);
+        pointG1 = G.multiply(x1);
+        pointG2 = G.multiply(x2);
         
         /* create ZKP of x1 and x2 (Schnorr) */
         SchnorrZKP zkpx1 = generateZKP(G, n, x1, pointG1, PC_ID);
         SchnorrZKP zkpx2 = generateZKP(G, n, x2, pointG2, PC_ID);
 
         /* Encode pointG1, pointG2, zkpx1, zkpx2 */
-        byte[] apduData1 = jpakeFirstApdu(pointG1, pointG2, zkpx1, zkpx2);
-        
-        /* Send data to card and get the response */
-        byte[] response = card.processJPAKE(apduData1);
-        
-        /* Parse the response */
-        ByteArrayInputStream stream = new ByteArrayInputStream(response);
-        byte[] pointBytes = new byte[POINT_LENGTH];
-        byte[] zkpBytes = new byte[ZKP_LENGTH];
-        
-        /* Get G3 = G x [x3], and a ZKP of x3 */
-        stream.read(pointBytes, 0, POINT_LENGTH);
-        ECPoint pointG3 = ecCurve.decodePoint(pointBytes);
-        stream.read(zkpBytes, 0, ZKP_LENGTH);
-        SchnorrZKP zkpx3 = new SchnorrZKP(zkpBytes);
-        
-        /* Get G4 = G x [x4], and a ZKP of x4 */
-        stream.read(pointBytes, 0, POINT_LENGTH);
-        ECPoint pointG4 = ecCurve.decodePoint(pointBytes);    
-        stream.read(zkpBytes, 0, ZKP_LENGTH);
-        SchnorrZKP zkpx4 = new SchnorrZKP(zkpBytes);
-        
-        /* Compute GB = G1 + G2 + G3 */
-        ECPoint GB = pointG1.add(pointG2).add(pointG3);
-        
-        /* Get B = (G1 + G2 + G3) x [x4*s] and a ZKP for x4*s */
-        stream.read(pointBytes, 0, POINT_LENGTH);
-        ECPoint B = ecCurve.decodePoint(pointBytes);
-        stream.read(zkpBytes, 0, ZKP_LENGTH);
-        SchnorrZKP zkpx4s = new SchnorrZKP(zkpBytes);
-        
-            
-        /* Verify ZKP of x3, x4, and x4*s */
-        if (verifyZKP(ecCurve, G, n, pointG3, zkpx3, CARD_ID) ){
-            System.out.println("ZKP x3 OK.");
-        } else {
-            System.out.println("ZKP x3 failed.");
-        }
-        if (verifyZKP(ecCurve, G, n, pointG4, zkpx4, CARD_ID) ){
-            System.out.println("ZKP x4 OK.");
-        } else {
-            System.out.println("ZKP x4 failed.");
-        }
-         if (verifyZKP(ecCurve, GB, n, B, zkpx4s, CARD_ID) ){
-            System.out.println("ZKP x4*s OK.");
-        } else {
-            System.out.println("ZKP x4*s failed.");
-        }
-
-        /* Compute GA = G1 + G3 + G4 */
-        ECPoint GA = pointG1.add(pointG3).add(pointG4).normalize(); 
-    	
-        /* Compute A = (G1 + G3 + G4) x [x2*s] and a ZKP for x2*s */
-        ECPoint A = GA.multiply(x2.multiply(SHARED_BIG_INT).mod(n));				
-    	SchnorrZKP zkpx2s = generateZKP(GA, n, x2.multiply(SHARED_BIG_INT).mod(n), A, PC_ID);
-		
-        /* Encode A and zkpx2s and send data to card */
-        byte[] apduData2 = jpakeSecondApdu(A, zkpx2s);
-        card.processJPAKE2(apduData2);
-        
-        /* Computed K = (B - (G4 x [x2*s])) x [x2] to get a shared secret */
-        ECPoint pointK = B.subtract(pointG4.multiply(x2.multiply(SHARED_BIG_INT))).multiply(x2).normalize();
-        BigInteger key = getSHA256(pointK.normalize().getXCoord().toBigInteger());
-        
-        /* Check if card has the same result */
-        card.compareResultJPAKE(key);
-    }
-    
-    public byte[] toByteWithoutSign(BigInteger bigInt) {
-        // Not used now
-        // removes first byte from BigInteger byte representation
-        byte[] array = bigInt.toByteArray();
-        byte[] tmp = new byte[array.length - 1];
-        System.arraycopy(array, 1, tmp, 0, tmp.length);
-        array = tmp;
-        return array;
-    }
-    
-    /*
-        Encodes data for first APDU in JPAKE
-    */
-    public byte[] jpakeFirstApdu(ECPoint pointG1, ECPoint pointG2, SchnorrZKP zkpx1,SchnorrZKP zkpx2) throws IOException {
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
         
         byteStream.write(pointG1.getEncoded(COMPRESS_POINTS));
@@ -202,11 +157,50 @@ public class SimpleAPDU {
         byteStream.close();
         return apduData;
     }
-
-    /*
-        Encodes data for second APDU in JPAKE
-    */
-    public byte[] jpakeSecondApdu(ECPoint A, SchnorrZKP zkpx2s) throws IOException {
+    
+    private boolean JPAKE2(byte[] response) {
+        /* Parse the response */
+        ByteArrayInputStream stream = new ByteArrayInputStream(response);
+        byte[] pointBytes = new byte[POINT_LENGTH];
+        byte[] zkpBytes = new byte[ZKP_LENGTH];
+        
+        /* Get G3 = G x [x3], and a ZKP of x3 */
+        stream.read(pointBytes, 0, POINT_LENGTH);
+        pointG3 = ecCurve.decodePoint(pointBytes);
+        stream.read(zkpBytes, 0, ZKP_LENGTH);
+        SchnorrZKP zkpx3 = new SchnorrZKP(zkpBytes);
+        
+        /* Get G4 = G x [x4], and a ZKP of x4 */
+        stream.read(pointBytes, 0, POINT_LENGTH);
+        pointG4 = ecCurve.decodePoint(pointBytes);    
+        stream.read(zkpBytes, 0, ZKP_LENGTH);
+        SchnorrZKP zkpx4 = new SchnorrZKP(zkpBytes);
+        
+        /* Verify ZKP of x3, x4 */
+        if (verifyZKP(ecCurve, G, n, pointG3, zkpx3, CARD_ID) ){
+            System.out.println("ZKP x3 OK.");
+        } else {
+            System.out.println("ZKP x3 failed.");
+            return false;
+        }
+        if (verifyZKP(ecCurve, G, n, pointG4, zkpx4, CARD_ID) ){
+            System.out.println("ZKP x4 OK.");
+        } else {
+            System.out.println("ZKP x4 failed.");
+            return false;
+        }
+        return true;
+    }
+    
+    private byte[] JPAKE3() throws IOException {
+        /* Compute GA = G1 + G3 + G4 */
+        GA = pointG1.add(pointG3).add(pointG4).normalize(); 
+    	
+        /* Compute A = (G1 + G3 + G4) x [x2*s] and a ZKP for x2*s */
+        A = GA.multiply(x2.multiply(SHARED_BIG_INT).mod(n));				
+    	SchnorrZKP zkpx2s = generateZKP(GA, n, x2.multiply(SHARED_BIG_INT).mod(n), A, PC_ID);
+		
+        /* Encode A and zkpx2s and send data to card */
         ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
         
         byteStream.write(A.normalize().getEncoded(COMPRESS_POINTS));
@@ -217,15 +211,98 @@ public class SimpleAPDU {
         return apduData;
     }
     
-    public BigInteger getSHA256(ECPoint G, ECPoint V, ECPoint D, String userID) {
+    private boolean JPAKE4(byte[] response){
+        ByteArrayInputStream stream = new ByteArrayInputStream(response);
+        byte[] pointBytes = new byte[POINT_LENGTH];
+        byte[] zkpBytes = new byte[ZKP_LENGTH];
+        
+        /* Compute GB = G1 + G2 + G3 */
+        ECPoint GB = pointG1.add(pointG2).add(pointG3);
+        
+        /* Get B = (G1 + G2 + G3) x [x4*s] and a ZKP for x4*s */
+        stream.read(pointBytes, 0, POINT_LENGTH);
+        ECPoint B = ecCurve.decodePoint(pointBytes);
+        stream.read(zkpBytes, 0, ZKP_LENGTH);
+        SchnorrZKP zkpx4s = new SchnorrZKP(zkpBytes);   
+        
+        /* Verify ZKP of x4*s */
+        if (verifyZKP(ecCurve, GB, n, B, zkpx4s, CARD_ID) ){
+            System.out.println("ZKP x4*s OK.");
+        } else {
+            System.out.println("ZKP x4*s failed.");
+            return false;
+        }
+        
+        /* Computed K = (B - (G4 x [x2*s])) x [x2] to get a shared secret */
+        pointK = B.subtract(pointG4.multiply(x2.multiply(SHARED_BIG_INT))).multiply(x2).normalize();
+        key = getSHA256(pointK.normalize().getXCoord().toBigInteger());
+        return true;
+    }
+    
+/*    private void jpakeWithoutCard() throws IOException {
+        AlmostCard card = new AlmostCard();
+        
+        byte[] apduData1 = new byte[1];
+        byte[] response = card.processJPAKE(apduData1);
+        
+        card.processJPAKE2(apduData2);
+        card.compareResultJPAKE(key);
+    }
+*/    
+    private byte[] toByteWithoutSign(BigInteger bigInt) {
+        // Not used now
+        // removes first byte from BigInteger byte representation
+        byte[] array = bigInt.toByteArray();
+        
+        //if(array.length > 32) {
+        //    array = Arrays.copyOfRange(r1Array, r1Array.length-32, r1Array.length);
+        //}
+        
+        byte[] tmp = new byte[array.length - 1];
+        System.arraycopy(array, 1, tmp, 0, tmp.length);
+        array = tmp;
+        return array;
+    }
+    
+    /*
+        Encodes data for first APDU in JPAKE
+    */
+/*    private byte[] jpakeFirstApdu(ECPoint pointG1, ECPoint pointG2, SchnorrZKP zkpx1,SchnorrZKP zkpx2) throws IOException {
+        ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
+        
+        byteStream.write(pointG1.getEncoded(COMPRESS_POINTS));
+        byteStream.write(zkpx1.toByteArray());
+        
+        byteStream.write(pointG2.getEncoded(COMPRESS_POINTS));
+        byteStream.write(zkpx2.toByteArray());
+                
+        byte[] apduData = byteStream.toByteArray();
+        byteStream.close();
+        return apduData;
+    }*/
+
+    /*
+        Encodes data for second APDU in JPAKE
+    */
+/*    private byte[] jpakeSecondApdu(ECPoint A, SchnorrZKP zkpx2s) throws IOException {
+        ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
+        
+        byteStream.write(A.normalize().getEncoded(COMPRESS_POINTS));
+        byteStream.write(zkpx2s.toByteArray());
+        
+        byte[] apduData = byteStream.toByteArray();
+        byteStream.close();
+        return apduData;
+    }*/
+    
+    private BigInteger getSHA256(ECPoint G, ECPoint V, ECPoint D, byte[] userID) {
     	MessageDigest sha256 = null;
     	try {
     		sha256 = MessageDigest.getInstance("SHA-256");
     		
-    		byte[] GBytes = G.getEncoded(false);
-    		byte[] VBytes = V.getEncoded(false);
-    		byte[] XBytes = D.getEncoded(false);
-    		byte[] userIDBytes = userID.getBytes();
+    		byte[] GBytes = G.getEncoded(true);
+    		byte[] VBytes = V.getEncoded(true);
+    		byte[] XBytes = D.getEncoded(true);
     		
     		// It's good practice to prepend each item with a 4-byte length
     		sha256.update(ByteBuffer.allocate(4).putInt(GBytes.length).array());
@@ -237,8 +314,8 @@ public class SimpleAPDU {
     		sha256.update(ByteBuffer.allocate(4).putInt(XBytes.length).array());
     		sha256.update(XBytes);
     		
-    		sha256.update(ByteBuffer.allocate(4).putInt(userIDBytes.length).array());
-    		sha256.update(userIDBytes);    	
+    		sha256.update(ByteBuffer.allocate(4).putInt(userID.length).array());
+    		sha256.update(userID);    	
    		
     	} catch (Exception e) {
     		e.printStackTrace();
@@ -246,7 +323,7 @@ public class SimpleAPDU {
     	return new BigInteger(sha256.digest());
     }
     
-    public BigInteger getSHA256(BigInteger toHash) {
+    private BigInteger getSHA256(BigInteger toHash) {
     	MessageDigest sha256 = null;
     	try {
     		sha256 = MessageDigest.getInstance("SHA-256");
@@ -257,7 +334,7 @@ public class SimpleAPDU {
     	return new BigInteger(1, sha256.digest()); // 1 for positive int
     }
     
-    private SchnorrZKP generateZKP (ECPoint G, BigInteger n, BigInteger d, ECPoint D, String userID) {
+    private SchnorrZKP generateZKP (ECPoint G, BigInteger n, BigInteger d, ECPoint D, byte[] userID) {
             /* Generate a proof of knowledge of scalar for D = [d] x G */
             
             /* Generate a random v from [1, n-1], and compute V = [v] x G */
@@ -270,7 +347,7 @@ public class SimpleAPDU {
             return new SchnorrZKP(V,r);
     }
     
-    private boolean verifyZKP(ECCurve ecCurve, ECPoint G, BigInteger n, ECPoint D, SchnorrZKP zkp, String userID) {
+    private boolean verifyZKP(ECCurve ecCurve, ECPoint G, BigInteger n, ECPoint D, SchnorrZKP zkp, byte[] userID) {
     	/* ZKP: {V=G*v, r} */    	    	
     	BigInteger c = getSHA256(G, zkp.getV(), D, userID);
     	
@@ -337,20 +414,22 @@ public class SimpleAPDU {
             */
             ByteArrayOutputStream byteStream = new ByteArrayOutputStream();
             byteStream.write(this.getV().normalize().getEncoded(COMPRESS_POINTS));
-            int diff = BIGINT_LENGTH - this.getr().toByteArray().length;
+            byte[] array = this.getr().toByteArray();
+            if(array.length > 32) {
+                array = java.util.Arrays.copyOfRange(array, array.length-32, array.length);
+            }
+            int diff = BIGINT_LENGTH - array.length;
             if (diff > 0){
                 byteStream.write(new byte[diff]);
             }
-            byteStream.write(this.getr().toByteArray());
+            byteStream.write(array);
             byte[] retBytes = byteStream.toByteArray();
             byteStream.close();
             return retBytes;
         }
     }
     
-    
-    
-    private static class AlmostCard {
+    public class AlmostCard {
         private BigInteger x3 = null;
         private BigInteger x4 = null;
         private BigInteger key = null; 
@@ -360,7 +439,7 @@ public class SimpleAPDU {
         private ECPoint pointG4 = null;
         private ECPoint pointK = null;
         
-        private boolean compareResultJPAKE(BigInteger otherKey){
+        public boolean compareResultJPAKE(BigInteger otherKey){
             /* Returns true if this.key == other.key */
             if (this.key.equals(otherKey)) {
                 System.out.println("They shared a key.");
@@ -371,7 +450,7 @@ public class SimpleAPDU {
             }
         }
         
-        byte[] processJPAKE(byte[] inApdu) throws IOException {
+        public byte[] processJPAKE(byte[] inApdu) throws IOException {
             /*
             This part should run on card.
             It processes data of first APDU in JPAKE and creates response.
@@ -438,7 +517,7 @@ public class SimpleAPDU {
             return response;
         }
         
-        void processJPAKE2(byte[] inApdu) throws IOException {
+        public void processJPAKE2(byte[] inApdu) throws IOException {
             /*
             This part should run on card.
             It processes data of second APDU in JPAKE and coputes shared secret.
