@@ -401,6 +401,10 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         byte [] r2Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_r2_OFFSET_DATA, inDataOffset + JPAKE1_r2_OFFSET_DATA + JPAKE_SCALARSIZE);
         BigInteger  r2 = new BigInteger(1, r2Array);
         
+        G1 = G1.normalize();
+        G2 = G2.normalize();
+        V1 = V1.normalize();
+        V2 = V2.normalize();
         
         if (!verifyZKP(Gen, G1, V1, r1, theirID) || !verifyZKP(Gen, G2, V2, r2, theirID)) {
             //sheeeeit
@@ -415,6 +419,11 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         
         G3 = Gen.multiply(x3);
         G4 = Gen.multiply(x4);
+        
+        G3 = G3.normalize();
+        G4 = G4.normalize();
+        
+        byte [] G3BArray = G3.getEncoded(true);
         
         SchnorrZKP zkpG3 = new SchnorrZKP();
         SchnorrZKP zkpG4 = new SchnorrZKP();
@@ -508,6 +517,10 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         byte [] rx2sArray = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE3_rx2s_OFFSET_DATA, inDataOffset + JPAKE3_rx2s_OFFSET_DATA + JPAKE_SCALARSIZE);
         BigInteger  rx2s = new BigInteger(1, rx2sArray);
         
+        GA = GA.normalize();
+        A = A.normalize();
+        Vx2s = Vx2s.normalize();
+        
         if (!verifyZKP(GA, A, Vx2s, rx2s, theirID)) {
             //sheeeeeeeeit
             ISOException.throwIt(SW_JPAKE3_PROOF_FAILED);
@@ -515,9 +528,10 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         
         BigInteger s = org.bouncycastle.util.BigIntegers.fromUnsignedByteArray(m_rawpin);
         
-        BigInteger K = getSHA256( A.subtract(G2.multiply(x4.multiply(s).mod(n))).multiply(x4).getXCoord().toBigInteger());
+        BigInteger K = A.subtract(G2.multiply(x4.multiply(s).mod(n))).multiply(x4).getXCoord().toBigInteger();
         
         byte [] Karr = K.toByteArray();
+        
         
         if(Karr.length > 32) {
             Karr = Arrays.copyOfRange(Karr, Karr.length-32, Karr.length);
