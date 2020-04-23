@@ -154,6 +154,23 @@ installed applet for secure data transmission. It then sends the \texttt{INIT} c
 sufficiently large prime of order \(n\). Our implementation uses the prime256v1
 curve. We use \(s\) to denote the shared secret (PIN).
 
+\subsection{Zero-knowledge proof}
+
+Authentication of this protocol relies on a well standardised Schnorr zero-knowledge proof
+scheme. The proof allows one to prove the knowledge of a discrete logarithm without leaking
+any information about its value. For brevity description of this scheme is omitted, but can
+be found in RFC8235. The main takeaway is that the proof
+of knowledge of an exponent \(a\) is comprised of:
+\begin{itemize}
+    \item UserID - a string identifying a communicating party
+    \item \(V = G^v \mod p\) - G is a point on an elliptic curve (same curve as used for J-PAKE), v is a randomly selected value from \(\langle 1, n - 1 \rangle\)
+    \item \(r = v - a \cdot c \mod q\) - \(a\) is a value for which the proof is computed
+    where \(c\) is a challenge (a hash) computed from the point \(V\), the curve \(G\),
+    the value \(a\) and the user identity.
+\end{itemize}
+The parties can verify the proofs by checking if their private knowledge of the exponent lies
+on the same curve as the proof says. The secret value is never transferred.
+
 \subsection{Phase 1}
 \label{sec:org2d28cdf}
 
@@ -213,9 +230,6 @@ At this point, the following equality holds true: \(K_a = K_b = G \cdot
 derivation function to derive a common session key \(k\). All subsequent
 communication is then encrypted using the derived session key \(k\).
 
-\section{Diagram}
-\label{sec:org3052e42}
-
 \begin{figure}[!htb]
  \centering
  \begin{tikzpicture}[node distance=2cm,auto,>=stealth']
@@ -264,12 +278,17 @@ Offset & Size & Value & Description\\
 1 & 2 & checksum & ALG\_ISO3309\_CRC16\\
 3 & 1 & length 00-FD & remaining length of the data\\
 4 & length 00-FD & any & message contents\\
-4+length & 256-4-length & padding & random bytes\\
+4+length & 240-4-length & padding & random bytes\\
 \end{tabular}
 \end{center}
 
 \section{Implementation}
 \label{sec:org9ff6715}
+
+After establishing the channel all exchanged messages are symmetrically encrypted 
+using 128-bit AES cipher in CBC mode with random padding with the derived session
+key. Channel initialization is an atomic operation. Should one of the steps on 
+either side fail, the whole  handshake is aborted and needs to be started anew.
 
 The purpose of the counter is to detect and prevent dropping, and replaying of
 the encrypted messages. The counter is valid for the duration of the session and
