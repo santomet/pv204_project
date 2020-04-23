@@ -177,28 +177,45 @@ public class SimpleAPDU {
                 cardMngr.transmit(main.deselectAPDU());
             }
             
-                    
-            byte[] testMessage = "whate we have got here... Is a failiure in communication".getBytes();
-//            CommandAPDU testApdu = new CommandAPDU(0xB0, INS_HASH, 0x00, 0x00, testMessage, 32); //32 because SHA256
-//            CommandAPDU secTestApdu = main.secureWrapOutgoing(testApdu);
-//            byte[] decrypted = main.secureUnwapOutgoing(secTestApdu);
-//            
-//            if (java.util.Arrays.equals(decrypted,testApdu.getBytes())){
-//                System.out.println("Encryption - decryption for outgoing works");
-//            } else {
-//                System.out.println("Encryption - decryption for outgoing does NOT work");
-//            }
+            String testMessage = "whate we have got here... Is a failiure in communication";
+            byte[] testBytes = testMessage.getBytes();
+            CommandAPDU testApdu = new CommandAPDU(0xB0, INS_HASH, 0x00, 0x00, testBytes, 32); //32 because SHA256
+            CommandAPDU secTestApdu = main.secureWrapOutgoing(testApdu);
+            byte[] decrypted = main.secureUnwapOutgoing(secTestApdu);
             
-            /* TEST - COMMAND with card*/
-            CommandAPDU command4 = new CommandAPDU(0xB0, INS_HASH, 0x0, 0x0, testMessage, 32);
+            if (java.util.Arrays.equals(decrypted,testApdu.getBytes())){
+                System.out.println("Encryption - decryption for outgoing works");
+            } else {
+                System.out.println("Encryption - decryption for outgoing does NOT work");
+            }
+            
+            /* TEST - HASH with card*/
+            CommandAPDU command4 = new CommandAPDU(0xB0, INS_HASH, 0x0, 0x0, testBytes, 32);
             ResponseAPDU response4 = cardMngr.transmit(main.secureWrapOutgoing(command4));
+            main.counter++; //ou yeah
+            byte[] hash = main.secureUnwrapIncoming(response4);
+            System.out.println("Hash of \"" + testMessage + "\":");
+            System.out.println(bytesToHex(hash));
             
             
-            /*
             
-            Sending messeges
+            main.counter++; //second message has already counter 2
+            String testMessage2 = "Hej zahoreli zore na tom nasom dvooore vstavaj suhaj rychlo hore sedlaj kone motorove";
+            byte [] testBytes2 = testMessage2.getBytes();
+            CommandAPDU command5 = new CommandAPDU(0xB0, INS_HASH, 0x0, 0x0, testBytes2, 32);
+            ResponseAPDU response5 = cardMngr.transmit(main.secureWrapOutgoing(command5));
+            main.counter++; //ou yeah
+            byte[] hash2 = main.secureUnwrapIncoming(response5);
+            System.out.println("Hash of \"" + testMessage2 + "\":");
+            System.out.println(bytesToHex(hash2));
             
-            */
+            
+            
+            
+            
+            
+            
+            
             cardMngr.transmit(main.deselectAPDU());
                              
         } catch (Exception ex) {
@@ -206,6 +223,17 @@ public class SimpleAPDU {
             Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
         }
     }
+    
+    private static final char[] HEX_ARRAY = "0123456789ABCDEF".toCharArray();
+    public static String bytesToHex(byte[] bytes) {
+    char[] hexChars = new char[bytes.length * 2];
+    for (int j = 0; j < bytes.length; j++) {
+        int v = bytes[j] & 0xFF;
+        hexChars[j * 2] = HEX_ARRAY[v >>> 4];
+        hexChars[j * 2 + 1] = HEX_ARRAY[v & 0x0F];
+    }
+    return new String(hexChars);
+}
     
     private boolean CreateSecureChannel(CardManager cardMngr)  throws Exception {
         
@@ -468,6 +496,35 @@ public class SimpleAPDU {
         return new CommandAPDU(0xB0, 0x04, 0x00, 0x00, message, 240); //please gimme 240 back
     }
     
+    
+    private byte[] secureUnwrapIncoming(ResponseAPDU apdu) {
+        byte [] message = apdu.getData();
+        try {
+        m_decryptCipher.doFinal(message, 0, message.length, message, 0);
+        } catch (ShortBufferException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (IllegalBlockSizeException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        } catch (BadPaddingException ex) {
+            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        }
+        
+        if(counter != message[SESSION_COUNTER_OFFSET]) {
+            System.err.println("Decryption - error - wrong counter");
+            return new byte[0];
+        }
+        
+        byte [] checksum = {0, 0};
+        m_checksum.doFinal(message, (short)SESSION_DATA_OFFSET, message[SESSION_DATALENGTH_OFFSET], checksum, (short)0);
+        if(checksum[0] != message[SESSION_CHECKSUM_OFFSET] || checksum[1] != message[SESSION_CHECKSUM_OFFSET+1]) {
+             System.err.println("Decryption - error - wrong checksum ");
+            return new byte[0];
+        }
+
+        return Arrays.copyOfRange(message, SESSION_DATA_OFFSET, SESSION_DATA_OFFSET + message[SESSION_DATALENGTH_OFFSET]);
+    }
+    
+    
     private byte[] secureUnwapOutgoing(CommandAPDU apdu) {
         byte[] message = apdu.getData();
         try {
@@ -487,7 +544,7 @@ public class SimpleAPDU {
         
         byte[] checksum = new byte[2];
         byte[] checksumIn = Arrays.copyOfRange(message, 1, 3);
-        m_checksum.doFinal(message,(short) 4, (short) 236, checksum,(short) 0);
+        m_checksum.doFinal(message,(short) 4, message[SESSION_DATALENGTH_OFFSET], checksum,(short) 0);
         
         if(!java.util.Arrays.equals(checksum, checksumIn)) {
             System.err.println("Decryption - error - wrong checksum ");
