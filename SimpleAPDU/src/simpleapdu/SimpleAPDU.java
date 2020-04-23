@@ -23,6 +23,7 @@ import javacard.framework.ISO7816;
 import javacard.framework.ISOException;
 import javacard.framework.OwnerPIN;
 import javacard.security.AESKey;
+import javacard.security.Checksum;
 import javacard.security.Key;
 import javacard.security.KeyBuilder;
 import javacard.security.KeyPair;
@@ -100,10 +101,7 @@ public class SimpleAPDU {
     private Cipher m_decryptCipher = null;
     private RandomData m_secureRandom = null;
     protected MessageDigest m_hash = null;
-    private Signature m_sign    = null;
-    private KeyPair m_keyPair   = null;
-    private Key m_privateKey    = null;
-    private Key m_publicKey     = null;
+    private Checksum m_checksum = null;
         
     
     protected SimpleAPDU() {
@@ -115,7 +113,7 @@ public class SimpleAPDU {
         ecCurve = (ECCurve.Fp) ecSpec.getCurve();
         G = ecSpec.getG();
         n = ecSpec.getN();
-        
+        m_checksum = Checksum.getInstance(Checksum.ALG_ISO3309_CRC16, false);
        
         try {
             // CREATE OBJECTS FOR CBC CIPHERING
@@ -175,6 +173,11 @@ public class SimpleAPDU {
             } else {
                 System.out.println("Encryption - decryption for outgoing does NOT work");
             }
+            
+            /* TEST - COMMAND with card*/
+            CommandAPDU command4 = new CommandAPDU(0xB0, 0x04, 0x0, 0x0, testMessage, 0, testMessage.length, (short)236);
+            ResponseAPDU response4 = cardMngr.transmit(main.secureWrapOutgoing(command4));
+            
             
             /*
             
@@ -394,10 +397,15 @@ public class SimpleAPDU {
     
     private void setKeyAES(byte[] newKey) {
         try {
-            MessageDigest sha = MessageDigest.getInstance("SHA-1");
-            newKey = sha.digest(newKey);
-            newKey = Arrays.copyOf(newKey, 16); // use only first 128 bit
+        //    MessageDigest sha = MessageDigest.getInstance("SHA-1");
+        //    newKey = sha.digest(newKey);
+        //    newKey = Arrays.copyOf(newKey, 16); // use only first 128 bit
 
+        //    m_aesKey = new SecretKeySpec(newKey, "AES");
+            if(newKey.length > 32) {
+                newKey = Arrays.copyOfRange(newKey, newKey.length-32, newKey.length);
+            }
+        
             m_aesKey = new SecretKeySpec(newKey, "AES");
             System.out.println(m_aesKey.getEncoded().length);
             m_encryptCipher.init(Cipher.ENCRYPT_MODE, m_aesKey);
@@ -407,8 +415,8 @@ public class SimpleAPDU {
             Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
         } catch (InvalidAlgorithmParameterException ex) {
             Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
-        } catch (NoSuchAlgorithmException ex) {
-            Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
+        //} catch (NoSuchAlgorithmException ex) {
+        //    Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
         }
     }
     
@@ -416,12 +424,16 @@ public class SimpleAPDU {
         byte[] apduBytes = apdu.getBytes();
         byte[] messageHeader = {(byte) counter, 0x00, 0x00, (byte) apduBytes.length};
         byte[] message = Arrays.concatenate(messageHeader, apduBytes);
+        
         int toFill = 240 - message.length;
         if (toFill > 0) {
             byte[] filling = new byte[toFill];
             Arrays.fill(filling, (byte) 0x01);
             message = Arrays.concatenate(message, filling);
         }
+        m_checksum.doFinal(message,(short) 4, (short) 236, message, (short) 1);
+        
+        
         try {
             m_encryptCipher.doFinal(message, 0, message.length, message, 0);
         } catch (ShortBufferException ex) {
@@ -448,6 +460,15 @@ public class SimpleAPDU {
         
         if (message[0] != (byte) counter){
             System.err.println("Decryption - error - wrong counter ");
+            return new byte[0];
+        }
+        
+        byte[] checksum = new byte[2];
+        byte[] checksumIn = Arrays.copyOfRange(message, 1, 3);
+        m_checksum.doFinal(message,(short) 4, (short) 236, checksum,(short) 0);
+        
+        if(!java.util.Arrays.equals(checksum, checksumIn)) {
+            System.err.println("Decryption - error - wrong checksum ");
             return new byte[0];
         }
         
