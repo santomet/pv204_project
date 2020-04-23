@@ -347,20 +347,24 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         if((short) buf[dataOffset+SESSION_COUNTER_OFFSET] != session_Counter) {
             ISOException.throwIt(SW_SESSION_COUNTER_BAD);
         }
-        //now compute checksum .... or no, fuck it for now. IDK how to do it fast in normal Java
-//        byte[] checksumarr = null; //probably use RAM in real card
-//        m_checksum.doFinal(buf, (short)(dataOffset + SESSION_DATA_OFFSET), (short)236, checksumarr, (short)0);
-//        short checksum = checksumarr[0];
         
-//        if((short) buf[dataOffset + SESSION_CHECKSUM_OFFSET] != checksum) {
-//            ISOException.throwIt(SW_SESSION_CHECKSUM_BAD);
-//        }
-
-        //nice, checksum is OK, now just get the APDU
         short APDUOffset = (short)(dataOffset + SESSION_DATA_OFFSET);
         short APDUDataOffset = (short) (dataOffset + SESSION_DATA_OFFSET + ISO7816.OFFSET_CDATA);
         short APDUDataSize = buf[APDUOffset + ISO7816.OFFSET_LC]; //we will test it only as that, too exhausted to do some controls
         short MessageSizeOffset = (short)(dataOffset + SESSION_DATALENGTH_OFFSET); //these might probably be static values, most of them... :D 
+        short MessageSize = buf[MessageSizeOffset];
+        
+        //now compute checksum .... or no, fuck it for now. IDK how to do it fast in normal Java
+        m_checksum.doFinal(buf, APDUOffset, MessageSize, m_ramArray, (short)0);
+        byte check1 = m_ramArray[0];
+        byte check2 = m_ramArray[1];
+        
+        if((byte) buf[dataOffset + SESSION_CHECKSUM_OFFSET] != check1 || (byte) buf[dataOffset + SESSION_CHECKSUM_OFFSET + 1] != check2) {
+            ISOException.throwIt(SW_SESSION_CHECKSUM_BAD);
+        }
+
+        //nice, checksum is OK, now just get the APDU
+        
         
         
         processDecrypted(apdu, buf, APDUOffset, MessageSizeOffset, APDUDataSize);
@@ -370,14 +374,18 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         session_Counter++;
         buf[dataOffset+SESSION_COUNTER_OFFSET] = (byte) session_Counter;
         //In-place checksum computation
-        m_checksum.doFinal(buf, (short)(dataOffset + SESSION_DATA_OFFSET), (short)236, buf, (short) (dataOffset + SESSION_CHECKSUM_OFFSET));
+        m_checksum.doFinal(buf, APDUOffset, buf[MessageSizeOffset], buf, (short) (dataOffset + SESSION_CHECKSUM_OFFSET));
+        
+        //SOOOOO you want some rng? OK!
+        m_secureRandom.generateData(buf, (short)(APDUOffset + buf[MessageSizeOffset]), (short)((short)236 - buf[MessageSizeOffset]));
+        
         
         m_encryptCipher.init(session_AESKey,Cipher.MODE_ENCRYPT);
         m_encryptCipher.doFinal(buf, dataOffset, (short)240, buf, dataOffset); //encrypt the data in-place back
         
         
         apdu.setOutgoingAndSend(dataOffset, (short)240);
-        
+        session_Counter++; //we are waiting for next message with new counter
     }
     
     
@@ -705,15 +713,15 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
 
 
         if (m_hash != null) {
-            m_hash.doFinal(apdubuf, ISO7816.OFFSET_CDATA, APDUDataSize, m_ramArray, (short) 0);
+            m_hash.doFinal(apdubuf, (short)(APDUOffset + ISO7816.OFFSET_CDATA), APDUDataSize, m_ramArray, (short) 0);
         } else {
             ISOException.throwIt(SW_OBJECT_NOT_AVAILABLE);
         }
 
         // COPY ENCRYPTED DATA INTO OUTGOING BUFFER
-        Util.arrayCopyNonAtomic(m_ramArray, (short) 0, apdubuf, (short)(ISO7816.OFFSET_CDATA + APDUOffset), m_hash.getLength());
+        Util.arrayCopyNonAtomic(m_ramArray, (short) 0, apdubuf, (short)(APDUOffset), m_hash.getLength()); //NOT TO APDU DATA (we need to move the data back a little
         
-        apdubuf[MessageSizeOffset] = (byte)m_hash.getLength();
+        apdubuf[MessageSizeOffset] = (byte)m_hash.getLength(); //so that the message is in our old header on which we can count
         
         // SEND OUTGOING BUFFER4
         //NOPE!! you dont!
