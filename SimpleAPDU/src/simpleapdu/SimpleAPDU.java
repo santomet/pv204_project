@@ -69,6 +69,21 @@ public class SimpleAPDU {
     private static final boolean COMPRESS_POINTS = true;
     private static final Integer ZKP_LENGTH = BIGINT_LENGTH + POINT_LENGTH;
     
+    final static byte INS_ENCRYPT = (byte) 0x50;
+    final static byte INS_DECRYPT = (byte) 0x51;
+    final static byte INS_SETKEY = (byte) 0x52;
+    final static byte INS_HASH = (byte) 0x53;
+    final static byte INS_RANDOM = (byte) 0x54;
+    final static byte INS_VERIFYPIN = (byte) 0x55;
+    final static byte INS_SETPIN = (byte) 0x56;
+    final static byte INS_RETURNDATA = (byte) 0x57;
+    final static byte INS_SIGNDATA = (byte) 0x58;
+    
+    final static short SESSION_COUNTER_OFFSET = (short) 0x0;
+    final static short SESSION_CHECKSUM_OFFSET = (short) 0x01;
+    final static short SESSION_DATALENGTH_OFFSET = (short) 0x03;
+    final static short SESSION_DATA_OFFSET = (short) 0x04;
+    
     private static final short RESPONSE_OK = (short) 0x9000;
     
     private static byte[] CARD_ID   = null;
@@ -76,7 +91,7 @@ public class SimpleAPDU {
     private static byte[] PIN       = null;
     private static BigInteger SHARED_BIG_INT = null;
     
-    private short counter = (short) 0x00;
+    private short counter = (byte) 0x00;
     
     private ECParameterSpec ecSpec  = null;
     private ECCurve.Fp  ecCurve     = null;
@@ -93,7 +108,7 @@ public class SimpleAPDU {
     private BigInteger x2 = null;
     
     private ECPoint pointK = null;
-    private BigInteger key = null;
+    private byte [] key = null;
     
     
     private SecretKey m_aesKey     = null;
@@ -163,19 +178,19 @@ public class SimpleAPDU {
             }
             
                     
-            byte[] testMessage = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06};
-            CommandAPDU testApdu = new CommandAPDU(0xB0, 0x04, 0x00, 0x00, testMessage);
-            CommandAPDU secTestApdu = main.secureWrapOutgoing(testApdu);
-            byte[] decrypted = main.secureUnwapOutgoing(secTestApdu);
-            
-            if (java.util.Arrays.equals(decrypted,testApdu.getBytes())){
-                System.out.println("Encryption - decryption for outgoing works");
-            } else {
-                System.out.println("Encryption - decryption for outgoing does NOT work");
-            }
+            byte[] testMessage = "whate we have got here... Is a failiure in communication".getBytes();
+//            CommandAPDU testApdu = new CommandAPDU(0xB0, INS_HASH, 0x00, 0x00, testMessage, 32); //32 because SHA256
+//            CommandAPDU secTestApdu = main.secureWrapOutgoing(testApdu);
+//            byte[] decrypted = main.secureUnwapOutgoing(secTestApdu);
+//            
+//            if (java.util.Arrays.equals(decrypted,testApdu.getBytes())){
+//                System.out.println("Encryption - decryption for outgoing works");
+//            } else {
+//                System.out.println("Encryption - decryption for outgoing does NOT work");
+//            }
             
             /* TEST - COMMAND with card*/
-            CommandAPDU command4 = new CommandAPDU(0xB0, 0x04, 0x0, 0x0, testMessage, 0, testMessage.length, (short)236);
+            CommandAPDU command4 = new CommandAPDU(0xB0, INS_HASH, 0x0, 0x0, testMessage, 32);
             ResponseAPDU response4 = cardMngr.transmit(main.secureWrapOutgoing(command4));
             
             
@@ -348,8 +363,14 @@ public class SimpleAPDU {
         
         /* Computed K = (B - (G4 x [x2*s])) x [x2] to get a shared secret */
         pointK = B.subtract(pointG4.multiply(x2.multiply(SHARED_BIG_INT))).multiply(x2).normalize();
-        key = pointK.normalize().getXCoord().toBigInteger();
-        setKeyAES(key.toByteArray());
+        BigInteger K = getSHA256(pointK.normalize().getXCoord().toBigInteger());
+        byte [] Karr = K.toByteArray();
+        if(Karr.length > 32) {
+            Karr = Arrays.copyOfRange(Karr, Karr.length-32, Karr.length);
+        }
+        
+        
+        setKeyAES(Karr);
         return true;
     }
     
@@ -408,9 +429,10 @@ public class SimpleAPDU {
         
             m_aesKey = new SecretKeySpec(newKey, "AES");
             System.out.println(m_aesKey.getEncoded().length);
-            m_encryptCipher.init(Cipher.ENCRYPT_MODE, m_aesKey);
-            byte[] iv = m_encryptCipher.getIV();
-            m_decryptCipher.init(Cipher.DECRYPT_MODE, m_aesKey, new IvParameterSpec(iv));
+            byte [] iv = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}; //well helll we know, fast fix!
+            IvParameterSpec ivParams = new IvParameterSpec(iv);
+            m_encryptCipher.init(Cipher.ENCRYPT_MODE, m_aesKey, ivParams);
+            m_decryptCipher.init(Cipher.DECRYPT_MODE, m_aesKey, ivParams);
         } catch (InvalidKeyException ex) {
             Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
         } catch (InvalidAlgorithmParameterException ex) {
@@ -427,11 +449,11 @@ public class SimpleAPDU {
         
         int toFill = 240 - message.length;
         if (toFill > 0) {
-            byte[] filling = new byte[toFill];
-            Arrays.fill(filling, (byte) 0x01);
+            SecureRandom sr = new SecureRandom();
+            byte[] filling = sr.generateSeed(toFill);
             message = Arrays.concatenate(message, filling);
         }
-        m_checksum.doFinal(message,(short) 4, (short) 236, message, (short) 1);
+        m_checksum.doFinal(message,(short) 4, (short)apduBytes.length, message, (short) 1);
         
         
         try {
@@ -443,7 +465,7 @@ public class SimpleAPDU {
         } catch (BadPaddingException ex) {
             Logger.getLogger(SimpleAPDU.class.getName()).log(Level.SEVERE, null, ex);
         }
-        return new CommandAPDU(0xB0, 0x04, 0x00, 0x00, message);
+        return new CommandAPDU(0xB0, 0x04, 0x00, 0x00, message, 240); //please gimme 240 back
     }
     
     private byte[] secureUnwapOutgoing(CommandAPDU apdu) {
