@@ -3,7 +3,21 @@ package applets;
 import javacard.framework.*;
 import javacard.security.*;
 import javacardx.crypto.*;
-import opencrypto.jcmathlib.*;
+//import opencrypto.jcmathlib.*;
+
+
+import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.security.spec.EllipticCurve;
+
+import org.bouncycastle.jce.ECNamedCurveTable;
+import org.bouncycastle.jce.spec.ECParameterSpec;
+import org.bouncycastle.jce.ECPointUtil;
+import org.bouncycastle.math.ec.ECCurve;
+import org.bouncycastle.math.ec.ECPoint;
+import org.bouncycastle.util.Arrays;
 
 public class AlmostSecureApplet extends javacard.framework.Applet {
     
@@ -13,6 +27,11 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     final static byte CLA_SIMPLEAPPLET = (byte) 0xB0;
 
     // INSTRUCTIONS
+    final static byte INS_JPAKE1 = (byte) 0x01;
+    final static byte INS_JPAKE3 = (byte) 0x02;
+    final static byte INS_END_SESSION = (byte) 0x03;
+    final static byte INS_ENCRYPTEDMESSAGE = (byte) 0x04;
+    
     final static byte INS_ENCRYPT = (byte) 0x50;
     final static byte INS_DECRYPT = (byte) 0x51;
     final static byte INS_SETKEY = (byte) 0x52;
@@ -22,6 +41,41 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     final static byte INS_SETPIN = (byte) 0x56;
     final static byte INS_RETURNDATA = (byte) 0x57;
     final static byte INS_SIGNDATA = (byte) 0x58;
+    
+    final static short JPAKE1_G1_OFFSET_DATA = (short) 0x0;
+    final static short JPAKE1_V1_OFFSET_DATA = (short) 0x21;
+    final static short JPAKE1_r1_OFFSET_DATA = (short) 0x42;
+    final static short JPAKE1_G2_OFFSET_DATA = (short) 0x62;
+    final static short JPAKE1_V2_OFFSET_DATA = (short) 0x83;
+    final static short JPAKE1_r2_OFFSET_DATA = (short) 0xA4;
+    
+    final static short JPAKE2_G3_OFFSET_DATA = (short) 0x0;
+    final static short JPAKE2_V3_OFFSET_DATA = (short) 0x21;
+    final static short JPAKE2_r3_OFFSET_DATA = (short) 0x42;
+    final static short JPAKE2_G4_OFFSET_DATA = (short) 0x62;
+    final static short JPAKE2_V4_OFFSET_DATA = (short) 0x83;
+    final static short JPAKE2_r4_OFFSET_DATA = (short) 0xA4;
+    
+    final static short JPAKE3_A_OFFSET_DATA = (short) 0x0;
+    final static short JPAKE3_Vx2s_OFFSET_DATA = (short) 0x21;
+    final static short JPAKE3_rx2s_OFFSET_DATA = (short) 0x42;
+    
+    final static short JPAKE4_B_OFFSET_DATA = (short) 0x0;
+    final static short JPAKE4_Vx4s_OFFSET_DATA = (short) 0x21;
+    final static short JPAKE4_rx4s_OFFSET_DATA = (short) 0x42;
+    
+    final static short JPAKE1_TOTAL_DATASIZE = (short) 0xC4;
+    final static short JPAKE2_TOTAL_DATASIZE = (short) 0xC4;
+    final static short JPAKE3_TOTAL_DATASIZE = (short) 0x62;
+    final static short JPAKE4_TOTAL_DATASIZE = (short) 0x62;
+    
+    final static short SESSION_COUNTER_OFFSET = (short) 0x0;
+    final static short SESSION_CHECKSUM_OFFSET = (short) 0x01;
+    final static short SESSION_DATALENGTH_OFFSET = (short) 0x03;
+    final static short SESSION_DATA_OFFSET = (short) 0x04;
+    
+    final static short JPAKE_COMPRESSEDPOINTSIZE = (short) 0x21;
+    final static short JPAKE_SCALARSIZE = (short) 0x20;
 
     final static short ARRAY_LENGTH = (short) 0xff;
     final static byte AES_BLOCK_LENGTH = (short) 0x16;
@@ -31,6 +85,11 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     final static short SW_CIPHER_DATA_LENGTH_BAD = (short) 0x6710;
     final static short SW_OBJECT_NOT_AVAILABLE = (short) 0x6711;
     final static short SW_BAD_PIN = (short) 0x6900;
+    final static short SW_JPAKE1_PROOF_FAILED = (short) 0xA001;
+    final static short SW_JPAKE3_PROOF_FAILED = (short) 0xA002;
+    
+    final static short SW_SESSION_COUNTER_BAD = (short) 0xA101;
+    final static short SW_SESSION_CHECKSUM_BAD = (short) 0xA102;
 
     final static short SW_Exception = (short) 0xff01;
     final static short SW_ArrayIndexOutOfBoundsException = (short) 0xff02;
@@ -44,11 +103,14 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     final static short SW_TransactionException_prefix = (short) 0xf400;
     final static short SW_CardRuntimeException_prefix = (short) 0xf500;
 
+    private byte   session_Counter = 0x0;
+    private AESKey session_AESKey = null;
     private AESKey m_aesKey = null;
     private Cipher m_encryptCipher = null;
     private Cipher m_decryptCipher = null;
+    private Checksum m_checksum = null;
     private RandomData m_secureRandom = null;
-    protected MessageDigest m_hash = null;
+    protected javacard.security.MessageDigest m_hash = null;
     private OwnerPIN m_pin = null;
     private byte[] m_rawpin = null;
     private Signature m_sign = null;
@@ -57,14 +119,21 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     private Key m_publicKey = null;
     
     //EC and schnorr
-    protected ECConfig        ecc = null;
-    protected ECCurve         curve = null;
-    protected ECPoint         Gen = null;
-    protected ECPoint         X3 = null;
-    protected ECPoint         X4 = null;
+    protected ECPoint         Gen = null; //generator point 
+    protected ECPoint         G1 = null;
+    protected ECPoint         G2 = null;
+    protected ECPoint         G3 = null;
+    protected ECPoint         G4 = null;
+    protected ECPoint         GA = null;
+    private BigInteger        n = null;
+    private BigInteger        x4 = null;
+    private AESKey            Ks = null; //AES session key
+    
+    protected ECParameterSpec   ecSpec = null;
+    protected ECCurve.Fp        ecCurve = null;
     //schnorr
-    byte[] mID = {'c', 'a', 'r', 'd'};
-    byte[] theirID = {'u', 's', 'e', 'r'};
+    byte[] mID = null;
+    byte[] theirID = null;
     
 
     // TEMPORARRY ARRAY IN RAM
@@ -106,10 +175,14 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
 
             // CREATE AES KEY OBJECT
             m_aesKey = (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
+            session_AESKey = (AESKey) KeyBuilder.buildKey(KeyBuilder.TYPE_AES, KeyBuilder.LENGTH_AES_256, false);
             // CREATE OBJECTS FOR CBC CIPHERING
             m_encryptCipher = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
             m_decryptCipher = Cipher.getInstance(Cipher.ALG_AES_BLOCK_128_CBC_NOPAD, false);
 
+            //checksum
+            m_checksum = Checksum.getInstance(Checksum.ALG_ISO3309_CRC16, false);
+            
             // CREATE RANDOM DATA GENERATORS
             m_secureRandom = RandomData.getInstance(RandomData.ALG_SECURE_RANDOM);
 
@@ -138,19 +211,17 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
             m_sign.init(m_privateKey, Signature.MODE_SIGN);
 
             // INIT HASH ENGINE
-            m_hash = MessageDigest.getInstance(MessageDigest.ALG_SHA_256, false);
+            m_hash = javacard.security.MessageDigest.getInstance(javacard.security.MessageDigest.ALG_SHA_256, false); //we have too smal buffer
 
             // update flag
             isOP2 = true;
             
             //ECC
-            ecc = new ECConfig((short) 256);
-            curve = new ECCurve(false, SecP256r1.p, SecP256r1.a, SecP256r1.b, SecP256r1.G, SecP256r1.r);
+            ecSpec = ECNamedCurveTable.getParameterSpec("prime256v1");
+            n = ecSpec.getN();
             
-            X3 = new ECPoint(curve, ecc.ech); //X3 and X4 points as per example
-            X4 = new ECPoint(curve, ecc.ech);
-            Gen = new ECPoint(curve, ecc.ech);
-            Gen.setW(SecP256r1.G, (short)0, (short)65);
+            ecCurve = (ECCurve.Fp) ecSpec.getCurve();
+            Gen = ecSpec.getG();
 
             mID = new byte[]{'c', 'a', 'r', 'd'};
             theirID = new byte[]{'u', 's', 'e', 'r'};
@@ -211,6 +282,124 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
             // APDU instruction parser
             if (apduBuffer[ISO7816.OFFSET_CLA] == CLA_SIMPLEAPPLET) {
                 switch (apduBuffer[ISO7816.OFFSET_INS]) {
+                    case INS_JPAKE1:
+                        JPake1(apdu);
+                        break;
+                    case INS_JPAKE3:
+                        JPake3(apdu);
+                        break;
+                    case INS_ENCRYPTEDMESSAGE:
+                        secureChannelAPDU(apdu);
+                        break;
+                    default:
+                        // The INS code is not supported by the dispatcher
+                        ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
+                        break;
+                }
+            } else {
+                ISOException.throwIt(ISO7816.SW_CLA_NOT_SUPPORTED);
+            }
+
+            // Capture all reasonable exceptions and change into readable ones (instead of 0x6f00) 
+        } catch (ISOException e) {
+            throw e; // Our exception from code, just re-emit
+        } catch (ArrayIndexOutOfBoundsException e) {
+            ISOException.throwIt(SW_ArrayIndexOutOfBoundsException);
+        } catch (ArithmeticException e) {
+            ISOException.throwIt(SW_ArithmeticException);
+        } catch (ArrayStoreException e) {
+            ISOException.throwIt(SW_ArrayStoreException);
+        } catch (NullPointerException e) {
+            ISOException.throwIt(SW_NullPointerException);
+        } catch (NegativeArraySizeException e) {
+            ISOException.throwIt(SW_NegativeArraySizeException);
+        } catch (CryptoException e) {
+            ISOException.throwIt((short) (SW_CryptoException_prefix | e.getReason()));
+        } catch (SystemException e) {
+            ISOException.throwIt((short) (SW_SystemException_prefix | e.getReason()));
+        } catch (PINException e) {
+            ISOException.throwIt((short) (SW_PINException_prefix | e.getReason()));
+        } catch (TransactionException e) {
+            ISOException.throwIt((short) (SW_TransactionException_prefix | e.getReason()));
+        } catch (CardRuntimeException e) {
+            ISOException.throwIt((short) (SW_CardRuntimeException_prefix | e.getReason()));
+        } catch (Exception e) {
+            ISOException.throwIt(SW_Exception);
+        }
+    }
+    
+    private void secureChannelAPDU(APDU apdu) {
+        byte[] buf = apdu.getBuffer();
+        short bytelen = apdu.setIncomingAndReceive();
+        short dataOffset = apdu.getOffsetCdata();
+        
+        //OK so data can have 255B at most + we want to modify data in place.
+        //so we get the nearest value which is 240B. that shall be the standard from now on yeaaah.
+        //but only 236B can be used for APDU itself so beware!
+        if(bytelen != (short) 240) {
+            ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
+        }
+        
+        //set the key we both should have, maybe create independent instance in real card IDK...
+        m_decryptCipher.init(session_AESKey, Cipher.MODE_DECRYPT);
+        m_decryptCipher.doFinal(buf, dataOffset, (short)240, buf, dataOffset);
+        //we'we got deciphered, now check counter!
+        if((short) buf[dataOffset+SESSION_COUNTER_OFFSET] != session_Counter) {
+            ISOException.throwIt(SW_SESSION_COUNTER_BAD);
+        }
+        
+        short APDUOffset = (short)(dataOffset + SESSION_DATA_OFFSET);
+        short APDUDataOffset = (short) (dataOffset + SESSION_DATA_OFFSET + ISO7816.OFFSET_CDATA);
+        short APDUDataSize = buf[APDUOffset + ISO7816.OFFSET_LC]; //we will test it only as that, too exhausted to do some controls
+        short MessageSizeOffset = (short)(dataOffset + SESSION_DATALENGTH_OFFSET); //these might probably be static values, most of them... :D 
+        short MessageSize = buf[MessageSizeOffset];
+        
+        //now compute checksum .... or no, fuck it for now. IDK how to do it fast in normal Java
+        m_checksum.doFinal(buf, APDUOffset, MessageSize, m_ramArray, (short)0);
+        byte check1 = m_ramArray[0];
+        byte check2 = m_ramArray[1];
+        
+        if((byte) buf[dataOffset + SESSION_CHECKSUM_OFFSET] != check1 || (byte) buf[dataOffset + SESSION_CHECKSUM_OFFSET + 1] != check2) {
+            ISOException.throwIt(SW_SESSION_CHECKSUM_BAD);
+        }
+
+        //nice, checksum is OK, now just get the APDU
+        
+        
+        
+        processDecrypted(apdu, buf, APDUOffset, MessageSizeOffset, APDUDataSize);
+        
+        //Oh so if we got here we now have to encrypt the response. The data should be located at APDU data (just like it used to be)
+        //just so I do not forget. So APDU(.......MESSAGE(Counter,Checksum,Datalength,*APDU(........)*)) asterisks
+        session_Counter++;
+        buf[dataOffset+SESSION_COUNTER_OFFSET] = (byte) session_Counter;
+        //In-place checksum computation
+        m_checksum.doFinal(buf, APDUOffset, buf[MessageSizeOffset], buf, (short) (dataOffset + SESSION_CHECKSUM_OFFSET));
+        
+        //SOOOOO you want some rng? OK!
+        m_secureRandom.generateData(buf, (short)(APDUOffset + buf[MessageSizeOffset]), (short)((short)236 - buf[MessageSizeOffset]));
+        
+        
+        m_encryptCipher.init(session_AESKey,Cipher.MODE_ENCRYPT);
+        m_encryptCipher.doFinal(buf, dataOffset, (short)240, buf, dataOffset); //encrypt the data in-place back
+        
+        
+        apdu.setOutgoingAndSend(dataOffset, (short)240);
+        session_Counter++; //we are waiting for next message with new counter
+    }
+    
+    
+    private void processDecrypted(APDU apdu, byte[] apduBuffer, short APDUOffset, short MessageSizeOffset, short APDUDataSize) {
+
+        // ignore the applet select command dispached to the process
+        if (selectingApplet()) {
+            return;
+        }
+
+        try {
+            // APDU instruction parser
+            if (apduBuffer[ISO7816.OFFSET_CLA + APDUOffset] == CLA_SIMPLEAPPLET) {
+                switch (apduBuffer[ISO7816.OFFSET_INS + APDUOffset]) {
                     case INS_SETKEY:
                         SetKey(apdu);
                         break;
@@ -221,7 +410,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
                         Decrypt(apdu);
                         break;
                     case INS_HASH:
-                        Hash(apdu);
+                        Hash(apdu, apduBuffer, APDUOffset, MessageSizeOffset, APDUDataSize);
                         break;
                     case INS_RANDOM:
                         Random(apdu);
@@ -278,7 +467,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     void clearSessionData() {
         // E.g., fill sesssion data in RAM with zeroes
         Util.arrayFillNonAtomic(m_ramArray, (short) 0, (short) m_ramArray.length, (byte) 0);
-        ecc.refreshAfterReset();
+        
         // Or better fill with random data
         m_secureRandom.generateData(m_ramArray, (short) 0, (short) m_ramArray.length);
     }
@@ -300,138 +489,180 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         m_encryptCipher.init(m_aesKey, Cipher.MODE_ENCRYPT);
         m_decryptCipher.init(m_aesKey, Cipher.MODE_DECRYPT);
     }
+ 
     
     
-    void jpakeResponse1(APDU apdu) {
+    void JPake1(APDU apdu) {
         
-        //ALICESIM
-        ECPoint X1 = new ECPoint(curve, ecc.ech);
-        ECPoint X2 = new ECPoint(curve, ecc.ech);
+        byte[] apdubuf = apdu.getBuffer();
         
-        
-        X1.randomize();
-        X2.randomize();
-        
-        opencrypto.jcmathlib.Integer x1 = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-        X1.getS(x1.getMagnitude_b(), (short)0);
-   
-        opencrypto.jcmathlib.Integer x2 = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-        X2.getS(x2.getMagnitude_b(), (short)0);
-        
-        SchnorrZKP zkpX1 = new SchnorrZKP();
-        SchnorrZKP zkpX2 = new SchnorrZKP();
-        zkpX1.generateZKP(Gen, X1, x1, theirID);
-        zkpX2.generateZKP(Gen, X2, x2, theirID);
-        //----------------------
-        
-        X3.randomize();
-        X4.randomize();
-        
-        opencrypto.jcmathlib.Integer x3 = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-        X3.getS(x3.getMagnitude_b(), (short)0);
-   
-        opencrypto.jcmathlib.Integer x4 = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-        X4.getS(x4.getMagnitude_b(), (short)0);
-        
-        SchnorrZKP zkpX3 = new SchnorrZKP();
-        SchnorrZKP zkpX4 = new SchnorrZKP();
-        zkpX3.generateZKP(Gen, X3, x3, mID);
-        zkpX4.generateZKP(Gen, X3, x4, mID);
-        
-        //ALICESIM
-        //check ID we need valid identity but whatever, this can be static, ID is a public information
-        if (verifyZKP(Gen, X3, zkpX3.getV(), zkpX3.getr(), mID, (short)4) && verifyZKP(Gen, X4, zkpX4.getV(), zkpX4.getr(), mID, (short)4)) {
-            //ok this works
-            byte[] kkt = new byte[] {0x01};
+        short datalen = apdu.setIncomingAndReceive();
+        // CHECK EXPECTED LENGTH 
+        if (datalen != JPAKE1_TOTAL_DATASIZE) {
+            ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
         }
-        //----------------------------------
+        short inDataOffset = apdu.getOffsetCdata();
+        short outDataOffset = apdu.getOffsetCdata();
+                
+        byte [] G1Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_G1_OFFSET_DATA, inDataOffset + JPAKE1_G1_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        G1 = ecCurve.decodePoint(G1Array);
+        byte [] V1Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_V1_OFFSET_DATA, inDataOffset+ JPAKE1_V1_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        ECPoint V1 = ecCurve.decodePoint(V1Array);
         
-        if (verifyZKP(Gen, X1, zkpX1.getV(), zkpX1.getr(), theirID, (short)4) && verifyZKP(Gen, X2, zkpX2.getV(), zkpX2.getr(), theirID, (short)4)) {
-            //ok this works
-            byte[] kkt = new byte[] {0x01};
+        byte [] r1Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_r1_OFFSET_DATA, inDataOffset + JPAKE1_r1_OFFSET_DATA + JPAKE_SCALARSIZE);
+        BigInteger  r1 = new BigInteger(1, r1Array);
+        
+        byte [] G2Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_G2_OFFSET_DATA, inDataOffset + JPAKE1_G2_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        G2 = ecCurve.decodePoint(G2Array); //savet this for later!!!
+        byte [] V2Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_V2_OFFSET_DATA, inDataOffset + JPAKE1_V2_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        ECPoint V2 = ecCurve.decodePoint(V2Array);
+        
+        byte [] r2Array = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE1_r2_OFFSET_DATA, inDataOffset + JPAKE1_r2_OFFSET_DATA + JPAKE_SCALARSIZE);
+        BigInteger  r2 = new BigInteger(1, r2Array);
+        
+        G1 = G1.normalize();
+        G2 = G2.normalize();
+        V1 = V1.normalize();
+        V2 = V2.normalize();
+        
+        if (!verifyZKP(Gen, G1, V1, r1, theirID) || !verifyZKP(Gen, G2, V2, r2, theirID)) {
+            //sheeeeit
+            ISOException.throwIt(SW_JPAKE1_PROOF_FAILED);
         }
-        
-        //should be common
-        opencrypto.jcmathlib.Integer n = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-        n.fromByteArrayAsNat(SecP256r1.n, (short)0, (short)32);
-        opencrypto.jcmathlib.Integer s = new opencrypto.jcmathlib.Integer(m_rawpin, (short)0, (short)4, ecc.bnh); //password = pin
-        
-        //ALICESIM
-        opencrypto.jcmathlib.Integer x2s = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-        x2s.clone(x2);
-        //-------------------------------------
-        
-        opencrypto.jcmathlib.Integer x4s = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-        x4s.clone(x4);
-        
 
-//STEP 2!!!!!
         
-        //ALICESIM
-        ECPoint GA = new ECPoint(curve, ecc.ech);
-        ECPoint A = new ECPoint(curve, ecc.ech);
-        GA.copy(X1);
-        GA.add(X3);
-        GA.add(X4);
-        A.copy(GA);
+        BigInteger x3 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
+    			n.subtract(BigInteger.ONE), new SecureRandom());
+    	x4 = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
+    			n.subtract(BigInteger.ONE), new SecureRandom()); //save this for later
         
-        x2s.multiply(s);
-        x2s.modulo(n); //x2 is now forever x2.multiply(s).mod(n)
+        G3 = Gen.multiply(x3);
+        G4 = Gen.multiply(x4);
         
-        A.multiplication(x2s.getMagnitude());
+        G3 = G3.normalize();
+        G4 = G4.normalize();
         
-        SchnorrZKP zkpX2s = new SchnorrZKP();
-        zkpX2s.generateZKP(GA, A, x2s, mID);
-        //-------------------
+        byte [] G3BArray = G3.getEncoded(true);
         
-        ECPoint GB = new ECPoint(curve, ecc.ech);
-        ECPoint B = new ECPoint(curve, ecc.ech);
-        GB.copy(X1);
-        GB.add(X2);
-        GB.add(X3);
-        B.copy(GB);
+        SchnorrZKP zkpG3 = new SchnorrZKP();
+        SchnorrZKP zkpG4 = new SchnorrZKP();
+        zkpG3.generateZKP(Gen, n, x3, G3, mID);
+        zkpG4.generateZKP(Gen, n, x4, G4, mID);
         
-        x4s.multiply(s);
-        x4s.modulo(n); //x2 is now forever x2.multiply(s).mod(n)
+        byte [] r3 = zkpG3.r.toByteArray();
+        byte [] r4 = zkpG4.r.toByteArray();
         
-        B.multiplication(x4s.getMagnitude());
-        
-        SchnorrZKP zkpX4s = new SchnorrZKP();
-        zkpX4s.generateZKP(GB, B, x4s, mID);
-        
-        
-        //CHECK!!!
-        //ALICESIM .
-        if (verifyZKP(GB, B, zkpX2s.getV(), zkpX4s.getr(), mID, (short)4)) {
-            //ok this works
-            byte[] kkt = new byte[] {0x01};
+        if(r3.length > 32) {
+            r3 = Arrays.copyOfRange(r3, r3.length-32, r3.length);
         }
-        //----------------------
-        
-        if (verifyZKP(GA, A, zkpX2s.getV(), zkpX2s.getr(), theirID, (short)4)) {
-            //ok this works
-            byte[] kkt = new byte[] {0x01};
+        if(r4.length > 32) {
+            r4 = Arrays.copyOfRange(r4, r4.length-32, r4.length);
         }
         
+        //Prepare JPAKE2 data
+        Util.arrayCopyNonAtomic(G3.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_G3_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(zkpG3.V.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_V3_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(r3, (short)0, apdubuf, (short)(JPAKE2_r3_OFFSET_DATA + outDataOffset) , JPAKE_SCALARSIZE);
+        Util.arrayCopyNonAtomic(G4.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_G4_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(zkpG4.V.getEncoded(true), (short)0, apdubuf, (short)(JPAKE2_V4_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(r4, (short)0, apdubuf, (short)(JPAKE2_r4_OFFSET_DATA + outDataOffset) , JPAKE_SCALARSIZE);
         
-        //ALICESIM
-        //opencrypto.jcmathlib.Integer Ka = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh);
-        X4.multiplication(x2s.getMagnitude());
-        X4.negate();
-        B.add(X4);
-        B.multiplication(x2.getMagnitude());
-        //-----------------------------
+        apdu.setOutgoingAndSend(outDataOffset, JPAKE2_TOTAL_DATASIZE);
+
+
         
-        //opencrypto.jcmathlib.Integer Kb = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh);
-        X2.multiplication(x4s.getMagnitude());
-        X2.negate();
-        A.add(X2);
-        A.multiplication(x4.getMagnitude());
+    }
+    
+    
+    void JPake3(APDU apdu) {
+        byte[] apdubuf = apdu.getBuffer();
         
-        if(A.isEqual(B)) {
-            //WE WON
-            byte[] kkt = new byte[] {0x01};
+        short datalen = apdu.setIncomingAndReceive();
+        // CHECK EXPECTED LENGTH 
+        if (datalen != JPAKE3_TOTAL_DATASIZE) {
+            ISOException.throwIt(ISO7816.SW_WRONG_LENGTH);
         }
+        short inDataOffset = apdu.getOffsetCdata();
+        short outDataOffset = apdu.getOffsetCdata();
+        
+        GA = G1.add(G3).add(G4); //save for later
+        
+        byte [] AArray = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE3_A_OFFSET_DATA, inDataOffset + JPAKE3_A_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        ECPoint A = ecCurve.decodePoint(AArray);
+        byte [] Vx2sArray = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE3_Vx2s_OFFSET_DATA, inDataOffset + JPAKE3_Vx2s_OFFSET_DATA + JPAKE_COMPRESSEDPOINTSIZE);
+        ECPoint Vx2s = ecCurve.decodePoint(Vx2sArray);
+        
+        byte [] rx2sArray = Arrays.copyOfRange(apdubuf, inDataOffset + JPAKE3_rx2s_OFFSET_DATA, inDataOffset + JPAKE3_rx2s_OFFSET_DATA + JPAKE_SCALARSIZE);
+        BigInteger  rx2s = new BigInteger(1, rx2sArray);
+        
+        GA = GA.normalize();
+        A = A.normalize();
+        Vx2s = Vx2s.normalize();
+        
+        if (!verifyZKP(GA, A, Vx2s, rx2s, theirID)) {
+            //sheeeeeeeeit
+            ISOException.throwIt(SW_JPAKE3_PROOF_FAILED);
+        }
+        
+        BigInteger s = org.bouncycastle.util.BigIntegers.fromUnsignedByteArray(m_rawpin);
+        
+        BigInteger scal = x4.multiply(s).mod(n);
+        ECPoint Kcurve = G2.multiply(scal);
+        Kcurve = A.subtract(Kcurve);
+        Kcurve = Kcurve.multiply(x4);
+        
+        Kcurve = Kcurve.normalize();
+        
+        BigInteger K = getSHA256(Kcurve.getXCoord().toBigInteger());
+        
+        byte [] Karr = K.toByteArray();
+        
+        
+        if(Karr.length > 32) {
+            Karr = Arrays.copyOfRange(Karr, Karr.length-32, Karr.length);
+        }
+        session_AESKey.setKey(Karr, (short)0);
+        
+      //  Ks.setKey(Karr, (short) 32);
+        
+        
+        ECPoint GB = G1.add(G2).add(G3);
+        GB = GB.normalize();
+    	ECPoint B = GB.multiply(x4.multiply(s).mod(n));
+        B = B.normalize();
+
+    	SchnorrZKP zkpG4s = new SchnorrZKP();
+    	zkpG4s.generateZKP(GB, n, x4.multiply(s).mod(n), B, mID);
+        
+        byte [] rx4s = zkpG4s.r.toByteArray();
+        
+        if(rx4s.length > 32) {
+            rx4s = Arrays.copyOfRange(rx4s, rx4s.length-32, rx4s.length);
+        }
+        
+        Util.arrayCopyNonAtomic(B.getEncoded(true), (short)0, apdubuf, (short)(JPAKE4_B_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(zkpG4s.V.getEncoded(true), (short)0, apdubuf, (short)(JPAKE4_Vx4s_OFFSET_DATA + outDataOffset) , JPAKE_COMPRESSEDPOINTSIZE);
+        Util.arrayCopyNonAtomic(rx4s, (short)0, apdubuf, (short)(JPAKE4_rx4s_OFFSET_DATA + outDataOffset) , JPAKE_SCALARSIZE);
+        
+        apdu.setOutgoingAndSend(outDataOffset, JPAKE4_TOTAL_DATASIZE);
+        
+        session_Counter = 0x0;
+
+//        System.out.println("CARD:     --");
+//        System.out.println(Kcurve + " KCurve");
+//        System.out.println(K + " key");
+//        System.out.println(G1 + " G1");
+//        System.out.println(G2 + " G2");
+//        System.out.println(G3 + " G3");
+//        System.out.println(G4 + " G4");
+//        
+//        System.out.println(A + " A");
+//        System.out.println(B + " B");
+//        System.out.println(GA + " GA");
+//        System.out.println(GB + " GB");
+//        System.out.println(Vx2s + " Vx2s");
+//        System.out.println(rx2s + " rx2s");
+//        System.out.println(s + " s");
         
     }
 
@@ -477,26 +708,28 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
     }
 
     // HASH INCOMING BUFFER
-    void Hash(APDU apdu) {
-        byte[] apdubuf = apdu.getBuffer();
-        short dataLen = apdu.setIncomingAndReceive();
+    void Hash(APDU apdu, byte[] apdubuf, short APDUOffset, short MessageSizeOffset, short APDUDataSize) {
+//        byte[] apdubuf = apdu.getBuffer();
+
 
         if (m_hash != null) {
-            m_hash.doFinal(apdubuf, ISO7816.OFFSET_CDATA, dataLen, m_ramArray, (short) 0);
+            m_hash.doFinal(apdubuf, (short)(APDUOffset + ISO7816.OFFSET_CDATA), APDUDataSize, m_ramArray, (short) 0);
         } else {
             ISOException.throwIt(SW_OBJECT_NOT_AVAILABLE);
         }
 
         // COPY ENCRYPTED DATA INTO OUTGOING BUFFER
-        Util.arrayCopyNonAtomic(m_ramArray, (short) 0, apdubuf, ISO7816.OFFSET_CDATA, m_hash.getLength());
-
-        // SEND OUTGOING BUFFER
-        apdu.setOutgoingAndSend(ISO7816.OFFSET_CDATA, m_hash.getLength());
+        Util.arrayCopyNonAtomic(m_ramArray, (short) 0, apdubuf, (short)(APDUOffset), m_hash.getLength()); //NOT TO APDU DATA (we need to move the data back a little
+        
+        apdubuf[MessageSizeOffset] = (byte)m_hash.getLength(); //so that the message is in our old header on which we can count
+        
+        // SEND OUTGOING BUFFER4
+        //NOPE!! you dont!
+        //apdu.setOutgoingAndSend(ISO7816.OFFSET_CDATA, m_hash.getLength());
     }
 
     // GENERATE RANDOM DATA
     void Random(APDU apdu) {
-        jpakeResponse1(apdu);
         byte[] apdubuf = apdu.getBuffer();
 
         // GENERATE DATA
@@ -551,152 +784,126 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         // SEND OUTGOING BUFFER
         apdu.setOutgoingAndSend(ISO7816.OFFSET_CDATA, signLen);
     }
+
     
-     public boolean verifyZKP(ECPoint G, ECPoint V, ECPoint X, opencrypto.jcmathlib.Integer r, byte[] userID, short userIDLength) {
+     public boolean verifyZKP(ECPoint generator, ECPoint X, ECPoint V, BigInteger r, byte[] userID) {
     	
     	/* ZKP: {V=G*v, r} */    	    	
-    	//BigInteger h = getSHA256(generator, V, X, userID);
-        
-        opencrypto.jcmathlib.Integer h = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-        AlmostSecureApplet.getHash(m_hash, G, V, X, userID, userIDLength, h.getMagnitude_b(), (short)0);
-        
+    	BigInteger h = getSHA256(generator, V, X, userID);
+    	
     	// Public key validation based on p. 25
     	// http://cs.ucsb.edu/~koc/ccs130h/notes/ecdsa-cert.pdf
     	
-        //We will count on nonzero
     	// 1. X != infinity
-    	//if (X.isInfinity()){
-    	//	return false;
-    	//}
+    	if (X.isInfinity()){
+    		return false;
+    	}
     	
     	// 2. Check x and y coordinates are in Fq, i.e., x, y in [0, q-1]
-        //skip for now IDK what the F is this, probably order of G
-    	//if (X.getX().toBigInteger().compareTo(BigInteger.ZERO) == -1 ||
-    	//		X.getX().toBigInteger().compareTo(q.subtract(BigInteger.ONE)) == 1 ||
-    	//		X.getY().toBigInteger().compareTo(BigInteger.ZERO) == -1 ||
-    	//		X.getY().toBigInteger().compareTo(q.subtract(BigInteger.ONE)) == 1) {
-    	//	return false;
-    	//}
-        
+    	if (X.getXCoord().toBigInteger().compareTo(BigInteger.ZERO) == -1 ||
+    			X.getXCoord().toBigInteger().compareTo(ecCurve.getQ().subtract(BigInteger.ONE)) == 1 ||
+    			X.getYCoord().toBigInteger().compareTo(BigInteger.ZERO) == -1 ||
+    			X.getYCoord().toBigInteger().compareTo(ecCurve.getQ().subtract(BigInteger.ONE)) == 1) {
+    		return false;
+    	}
+    				
     	// 3. Check X lies on the curve
-    	//try {
-    	//	ecCurve.decodePoint(X.getEncoded());
-    	//}
+    	try {
+    		ecCurve.decodePoint(X.getEncoded(false));
+    	}
+    	catch(Exception e){
+    		e.printStackTrace();
+    		return false;
+    	}
     	
     	// 4. Check that nX = infinity.
     	// It is equivalent - but more more efficient - to check the coFactor*X is not infinity
-    	//if (X.multiply(coFactor).isInfinity()) { 
-    	//	return false;
-    	//}
-    	
-        
-        
-    	// Now check if V = G*r + X*h. 
-        ECPoint X1 = new ECPoint(curve, ecc.ech);
-        ECPoint G1 = new ECPoint(curve, ecc.ech);
-        X1.copy(X);
-        G1.copy(G);
-        
-        X1.multiplication(h.getMagnitude());
-        G1.multiplication(r.getMagnitude());
-        
-        X1.add(G1);
-        
-        
-        
-        
-    	// Given that {G, X} are valid points on curve, the equality implies that V is also a point on curve.
-    	return X.isEqual(V);
-    }
-
-    public static final short getHash(MessageDigest hash, ECPoint G, ECPoint V, ECPoint X, byte[] userID, short userIDLength, byte[] buffer, short offset) {
-        
-                short compCSize = 33; //size of compressed form of curve
-    		byte [] VCompressed = new byte[compCSize];
-                V.getCompressed(VCompressed, (short)0);
-    		byte [] XCompressed = new byte[compCSize];
-                X.getCompressed(XCompressed, (short)0);
-                byte [] GCompressed = new byte[compCSize];
-                G.getCompressed(GCompressed, (short)0);
-                
-                
-                byte [] shaPaddingCompCurve = {0x00, 0x00, (byte)((compCSize << 8) & 0xff), (byte)((compCSize) & 0xff)}; //padding required by SHA (and forced in our J-PAKE reference implementation)
-                                                          //that contains 4 bytes of size of what we are going to add
-                byte [] shaPaddingUserID = {0x00, 0x00, (byte)((userIDLength << 8) & 0xff), (byte)((userIDLength) & 0xff)};
-                                                              
-                hash.reset();
-                hash.update(shaPaddingCompCurve, (short)0, (short)4);
-                hash.update(GCompressed, (short)0, (short)33); //we do not have to pepend 0x03
-
-    		hash.update(shaPaddingCompCurve, (short)0, (short)4);
-                hash.update(VCompressed, (short)0, compCSize);
-                
-                hash.update(shaPaddingCompCurve, (short)0, (short)4);
-                hash.update(XCompressed, (short)0, compCSize);
-                
-                hash.update(shaPaddingUserID, (short)0, (short)4);
-                hash.update(userID, (short)0, userIDLength);
-                
-                hash.doFinal(userID, (short)0, userIDLength, buffer, offset);
-                
-   	return hash.getLength();
-    }
-
-    public opencrypto.jcmathlib.Integer getHash(opencrypto.jcmathlib.Integer K) {
-
-    	m_hash.reset();
-        opencrypto.jcmathlib.Integer ret = new opencrypto.jcmathlib.Integer((short)m_hash.getLength(), ecc.bnh);
-        m_hash.doFinal(K.getMagnitude_b(), (short)0, K.getSize(), ret.getMagnitude_b(), (short)0);
-        //m_hash.update(K.getMagnitude_b(), (short)0, K.getSize());
-        
-
-    	return ret; // 1 for positive int
-    }
-    
-    protected class SchnorrZKP {
-    	
-    	private ECPoint V = null;
-    	private opencrypto.jcmathlib.Integer r = null;
-        short m_ramoffset = 0; //maybe will be used once
-    			
-    	private SchnorrZKP () {
-                r = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-                V = new ECPoint(curve, ecc.ech);
+    	if (X.multiply(ecSpec.getH()).isInfinity()) { 
+    		return false;
     	}
     	
-    	private void generateZKP (ECPoint G, ECPoint X, opencrypto.jcmathlib.Integer x, byte[] userID) {
+    	// Now check if V = G*r + X*h. 
+    	// Given that {G, X} are valid points on curve, the equality implies that V is also a point on curve.
+    	if (V.equals(generator.multiply(r).add(X.multiply(h.mod(n))))) {
+    		return true;
+    	}
+    	else {
+    		return false;
+    	}
+    }
+    
+    
+        public BigInteger getSHA256(ECPoint generator, ECPoint V, ECPoint X, byte[] userID) {
 
-                opencrypto.jcmathlib.Integer h = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh); //we need to store multiplication
-                
-                V.randomize(); //effectively generating random v
-                AlmostSecureApplet.getHash(m_hash, G, V, X, userID, (short)userID.length, h.getMagnitude_b(), (short)32);
+    	MessageDigest sha256 = null;
 
-                opencrypto.jcmathlib.Integer v = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-                opencrypto.jcmathlib.Integer n = new opencrypto.jcmathlib.Integer((short)32, ecc.bnh);
-                n.fromByteArrayAsNat(SecP256r1.n, (short)0, (short)32);
-                
-                opencrypto.jcmathlib.Integer x2 = new opencrypto.jcmathlib.Integer((short)64, ecc.bnh); //another dirty trick, why this will never work on real javacard
-                x2.clone(x);
-                
-                //extracting private keys
-                V.getS(v.getMagnitude_b(), (short)0);
-                X.getS(v.getMagnitude_b(), (short)0);
-                
-                // r = v-x*h mod n    ==   (-h*x + v) mod n                
-                h.multiply(x2);
-                h.negate();
-                
-                h.add(v);
-                h.modulo(n); //we still have the negative value of mod
-                h.add(n); //so we need o add this
-                r = h;
+    	try {
+    		sha256 = MessageDigest.getInstance("SHA-256");
+    		
+    		byte [] GBytes = generator.getEncoded(true);
+    		byte [] VBytes = V.getEncoded(true);
+    		byte [] XBytes = X.getEncoded(true);
+    		
+    		// It's good practice to prepend each item with a 4-byte length
+    		sha256.update(ByteBuffer.allocate(4).putInt(GBytes.length).array());
+    		sha256.update(GBytes);
+
+    		sha256.update(ByteBuffer.allocate(4).putInt(VBytes.length).array());
+    		sha256.update(VBytes);
+
+    		sha256.update(ByteBuffer.allocate(4).putInt(XBytes.length).array());
+    		sha256.update(XBytes);
+    		
+    		sha256.update(ByteBuffer.allocate(4).putInt(userID.length).array());
+    		sha256.update(userID);    	
+   		
+    	} catch (Exception e) {
+    		e.printStackTrace();
+    	}
+
+    	return new BigInteger(sha256.digest());
+    }
+
+    public BigInteger getSHA256(BigInteger K) {
+
+    	MessageDigest sha256 = null;
+
+    	try {
+    		sha256 = MessageDigest.getInstance("SHA-256");
+    		sha256.update(K.toByteArray());
+    	} catch (Exception e) {
+    		e.printStackTrace();
+    	}
+
+    	return new BigInteger(1, sha256.digest()); // 1 for positive int
+    }
+    
+    private class SchnorrZKP {
+    	
+    	private ECPoint V = null;
+    	private BigInteger r = null;
+    			
+    	private SchnorrZKP () {
+    		// constructor
+    	}
+    	
+    	private void generateZKP (ECPoint generator, BigInteger n, BigInteger x, ECPoint X, byte[] userID) {
+
+        	/* Generate a random v from [1, n-1], and compute V = G*v */
+        	BigInteger v = org.bouncycastle.util.BigIntegers.createRandomInRange(BigInteger.ONE, 
+        			n.subtract(BigInteger.ONE), new SecureRandom());
+        	V = generator.multiply(v);
+        	
+        	BigInteger h = getSHA256(generator, V, X, userID); // h
+
+        	r = v.subtract(x.multiply(h)).mod(n); // r = v-x*h mod n   
         }
     	
     	private ECPoint getV() {
     		return V;
     	}
     	
-    	private opencrypto.jcmathlib.Integer getr() {
+    	private BigInteger getr() {
     		return r;
     	}
     	
