@@ -291,6 +291,9 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
                     case INS_ENCRYPTEDMESSAGE:
                         secureChannelAPDU(apdu);
                         break;
+		    case INS_END_SESSION:
+			clearSessionData();
+			break;
                     default:
                         // The INS code is not supported by the dispatcher
                         ISOException.throwIt(ISO7816.SW_INS_NOT_SUPPORTED);
@@ -415,12 +418,12 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
                     case INS_RANDOM:
                         Random(apdu);
                         break;
-                    case INS_VERIFYPIN:
-                        VerifyPIN(apdu);
-                        break;
-                    case INS_SETPIN:
-                        SetPIN(apdu);
-                        break;
+                    //case INS_VERIFYPIN:
+                    //    VerifyPIN(apdu);
+                    //    break;
+                    //case INS_SETPIN:
+                    //    SetPIN(apdu);
+                    //    break;
                     case INS_RETURNDATA:
                         ReturnData(apdu);
                         break;
@@ -526,7 +529,6 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         V2 = V2.normalize();
         
         if (!verifyZKP(Gen, G1, V1, r1, theirID) || !verifyZKP(Gen, G2, V2, r2, theirID)) {
-            //sheeeeit
             ISOException.throwIt(SW_JPAKE1_PROOF_FAILED);
         }
 
@@ -568,9 +570,6 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         Util.arrayCopyNonAtomic(r4, (short)0, apdubuf, (short)(JPAKE2_r4_OFFSET_DATA + outDataOffset) , JPAKE_SCALARSIZE);
         
         apdu.setOutgoingAndSend(outDataOffset, JPAKE2_TOTAL_DATASIZE);
-
-
-        
     }
     
     
@@ -600,7 +599,6 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         Vx2s = Vx2s.normalize();
         
         if (!verifyZKP(GA, A, Vx2s, rx2s, theirID)) {
-            //sheeeeeeeeit
             ISOException.throwIt(SW_JPAKE3_PROOF_FAILED);
         }
         
@@ -622,10 +620,7 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
             Karr = Arrays.copyOfRange(Karr, Karr.length-32, Karr.length);
         }
         session_AESKey.setKey(Karr, (short)0);
-        
-      //  Ks.setKey(Karr, (short) 32);
-        
-        
+           
         ECPoint GB = G1.add(G2).add(G3);
         GB = GB.normalize();
     	ECPoint B = GB.multiply(x4.multiply(s).mod(n));
@@ -647,22 +642,6 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
         apdu.setOutgoingAndSend(outDataOffset, JPAKE4_TOTAL_DATASIZE);
         
         session_Counter = 0x0;
-
-//        System.out.println("CARD:     --");
-//        System.out.println(Kcurve + " KCurve");
-//        System.out.println(K + " key");
-//        System.out.println(G1 + " G1");
-//        System.out.println(G2 + " G2");
-//        System.out.println(G3 + " G3");
-//        System.out.println(G4 + " G4");
-//        
-//        System.out.println(A + " A");
-//        System.out.println(B + " B");
-//        System.out.println(GA + " GA");
-//        System.out.println(GB + " GB");
-//        System.out.println(Vx2s + " Vx2s");
-//        System.out.println(rx2s + " rx2s");
-//        System.out.println(s + " s");
         
     }
 
@@ -709,9 +688,6 @@ public class AlmostSecureApplet extends javacard.framework.Applet {
 
     // HASH INCOMING BUFFER
     void Hash(APDU apdu, byte[] apdubuf, short APDUOffset, short MessageSizeOffset, short APDUDataSize) {
-//        byte[] apdubuf = apdu.getBuffer();
-
-
         if (m_hash != null) {
             m_hash.doFinal(apdubuf, (short)(APDUOffset + ISO7816.OFFSET_CDATA), APDUDataSize, m_ramArray, (short) 0);
         } else {
